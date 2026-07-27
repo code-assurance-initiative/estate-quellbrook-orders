@@ -1,0 +1,3 @@
+[*.cs]
+# Production code never resumes on a captured context.
+dotnet_diagnostic.CA2007.severity = warning
