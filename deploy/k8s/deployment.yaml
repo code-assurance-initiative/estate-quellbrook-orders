@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quellbrook-orders
+  namespace: quellbrook-orders
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quellbrook-orders
+  namespace: quellbrook-orders
+  labels:
+    app.kubernetes.io/name: quellbrook-orders
+    app.kubernetes.io/part-of: quellbrook
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: quellbrook-orders
+  template:
+    metadata:
+      annotations:
+        linkerd.io/inject: enabled
+      labels:
+        app.kubernetes.io/name: quellbrook-orders
+        app.kubernetes.io/part-of: quellbrook
+    spec:
+      serviceAccountName: quellbrook-orders
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: ghcr.io/code-assurance-initiative/quellbrook-orders@sha256:d105b15c1ef840d9a692d447964197982b9b7cf32a2ad026e7630c43808c527f
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              value: Production
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.observability.svc:4317
+            - name: ConnectionStrings__Orders
+              valueFrom:
+                secretKeyRef:
+                  name: quellbrook-orders-db
+                  key: connection-string
+            - name: RabbitMq__UserName
+              valueFrom:
+                secretKeyRef:
+                  name: quellbrook-orders-broker
+                  key: username
+            - name: RabbitMq__Password
+              valueFrom:
+                secretKeyRef:
+                  name: quellbrook-orders-broker
+                  key: password
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: quellbrook-orders
+  namespace: quellbrook-orders
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: quellbrook-orders

@@ -1,0 +1,96 @@
+# Default deny in both directions, then one allowance per real flow.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: quellbrook-orders
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: quellbrook-orders
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Only the gateway calls the API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-from-gateway
+  namespace: quellbrook-orders
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: quellbrook-orders
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: quellbrook-edge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: quellbrook-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-egress
+  namespace: quellbrook-orders
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: quellbrook-orders
+  policyTypes: ["Egress"]
+  egress:
+    # PostgreSQL
+    - to:
+        - ipBlock:
+            cidr: 10.20.8.0/24
+      ports:
+        - protocol: TCP
+          port: 5432
+    # RabbitMQ (amqps)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: messaging
+      ports:
+        - protocol: TCP
+          port: 5671
+    # Identity provider (token signing keys) and the telemetry collector
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: identity
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 4317
