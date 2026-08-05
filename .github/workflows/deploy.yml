@@ -1,0 +1,66 @@
+name: Deploy
+
+# Manual, behind the protected "production" environment (required reviewers). Order: migrate the schema with the
+# release's migrations bundle (migrations are additive), then roll out the image by digest, wait for the rollout,
+# and undo it if the new pods never become ready.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to roll out, e.g. v0.3.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      VERSION: ${{ inputs.version }}
+      NAMESPACE: quellbrook-orders
+    steps:
+      - name: Fetch release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" --pattern efbundle --pattern SHA256SUMS --pattern image-digests.txt --dir release
+          (cd release && sha256sum --check SHA256SUMS)
+          gh attestation verify release/efbundle --repo "$GITHUB_REPOSITORY"
+          chmod +x release/efbundle
+
+      - name: Migrate the database
+        env:
+          ConnectionStrings__Orders: ${{ secrets.PRODUCTION_DB_MIGRATOR_CONNECTION }}
+        run: ./release/efbundle
+
+      - name: Write kubeconfig
+        env:
+          KUBECONFIG_DATA: ${{ secrets.PRODUCTION_KUBECONFIG }}
+        run: |
+          umask 077
+          printf '%s' "$KUBECONFIG_DATA" > "$RUNNER_TEMP/kubeconfig"
+
+      - name: Roll out
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: |
+          digest=$(sed -n 's/^orders=//p' release/image-digests.txt)
+          kubectl -n "$NAMESPACE" set image deployment/quellbrook-orders api="ghcr.io/code-assurance-initiative/quellbrook-orders@${digest}"
+          if ! kubectl -n "$NAMESPACE" rollout status deployment/quellbrook-orders --timeout=5m; then
+            echo "::error::quellbrook-orders did not become ready; rolling back"
+            kubectl -n "$NAMESPACE" rollout undo deployment/quellbrook-orders
+            kubectl -n "$NAMESPACE" rollout status deployment/quellbrook-orders --timeout=5m
+            exit 1
+          fi
+
+      - name: Remove kubeconfig
+        if: always()
+        run: rm -f "$RUNNER_TEMP/kubeconfig"

@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      microsoft:
+        patterns:
+          - "Microsoft.*"
+          - "Npgsql.*"
+      opentelemetry:
+        patterns:
+          - "OpenTelemetry*"
+      tests:
+        patterns:
+          - "xunit*"
+          - "coverlet.*"
+          - "NSubstitute"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: docker
+    directory: /src/Quellbrook.Orders.Api
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
