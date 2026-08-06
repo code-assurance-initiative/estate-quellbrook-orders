@@ -1,0 +1,31 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: quellbrook-orders
+  description: Order service — places and tracks shippers' orders and publishes order events.
+  annotations:
+    github.com/project-slug: code-assurance-initiative/estate-quellbrook-orders
+  tags: [dotnet, ddd, postgres, rabbitmq]
+spec:
+  type: service
+  lifecycle: production
+  owner: group:orders
+  system: quellbrook-operations
+  providesApis:
+    - quellbrook-orders-api
+  dependsOn:
+    - resource:quellbrook-orders-db
+    - resource:quellbrook-event-broker
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: quellbrook-orders-api
+  description: HTTP API of the order service, consumed by the gateway.
+spec:
+  type: openapi
+  lifecycle: production
+  owner: group:orders
+  system: quellbrook-operations
+  definition:
+    $text: ./contracts/openapi.yaml
