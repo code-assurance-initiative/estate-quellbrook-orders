@@ -58,4 +58,28 @@ public sealed class OrderTests
         Assert.Empty(restored.DomainEvents);
         Assert.Equal(placed.TotalWeightGrams, restored.TotalWeightGrams);
     }
+
+    [Fact]
+    public void CancellingRecordsWhoWhenAndWhyAndRaisesOrderCancelled()
+    {
+        var order = OrderData.Placed();
+        order.ClearDomainEvents();
+        var at = OrderData.PlacedAt.AddHours(2);
+
+        order.Cancel(" Consignee moved ", "operator-4", at);
+
+        Assert.Equal(OrderStatus.Cancelled, order.Status);
+        Assert.Equal(("operator-4", at, "Consignee moved"), (order.CancelledBy, order.CancelledAt, order.CancellationReason));
+        var cancelled = Assert.IsType<OrderCancelled>(Assert.Single(order.DomainEvents));
+        Assert.Equal("Consignee moved", cancelled.Reason);
+    }
+
+    [Fact]
+    public void AnOrderCannotBeCancelledTwice()
+    {
+        var order = OrderData.Placed();
+        order.Cancel("first", "operator-4", OrderData.PlacedAt);
+
+        Assert.Throws<DomainException>(() => order.Cancel("second", "operator-4", OrderData.PlacedAt));
+    }
 }

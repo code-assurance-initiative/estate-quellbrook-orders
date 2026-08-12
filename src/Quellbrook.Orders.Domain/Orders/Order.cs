@@ -48,6 +48,12 @@ public sealed class Order : AggregateRoot
 
     public DateTimeOffset PlacedAt { get; }
 
+    public string? CancelledBy { get; private set; }
+
+    public DateTimeOffset? CancelledAt { get; private set; }
+
+    public string? CancellationReason { get; private set; }
+
     public int TotalWeightGrams => _parcels.Sum(parcel => parcel.WeightGrams);
 
     public static Order Place(
@@ -80,8 +86,35 @@ public sealed class Order : AggregateRoot
         IEnumerable<Parcel> parcels,
         OrderStatus status,
         string placedBy,
-        DateTimeOffset placedAt) =>
-        new(id, customer, consignee, serviceLevel, [.. parcels], placedBy, placedAt) { Status = status };
+        DateTimeOffset placedAt,
+        Cancellation? cancellation = null) =>
+        new(id, customer, consignee, serviceLevel, [.. parcels], placedBy, placedAt)
+        {
+            Status = status,
+            CancelledBy = cancellation?.By,
+            CancelledAt = cancellation?.At,
+            CancellationReason = cancellation?.Reason,
+        };
+
+    /// <summary>
+    /// Cancels a placed order. Dispatch drops the consignment when it hears of it; a parcel already on a route is
+    /// returned to the depot by the driver.
+    /// </summary>
+    public void Cancel(string reason, string cancelledBy, DateTimeOffset cancelledAt)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cancelledBy);
+        if (Status == OrderStatus.Cancelled)
+        {
+            throw new DomainException($"Order {Id} is already cancelled.");
+        }
+
+        var trimmedReason = Text.Required(reason, 200, nameof(reason));
+        Status = OrderStatus.Cancelled;
+        CancelledBy = cancelledBy;
+        CancelledAt = cancelledAt;
+        CancellationReason = trimmedReason;
+        Raise(new OrderCancelled(Id, trimmedReason, cancelledAt));
+    }
 
     private static void EnsureParcelsAllowed(ServiceLevel serviceLevel, IReadOnlyList<ParcelSpecification> parcels)
     {
