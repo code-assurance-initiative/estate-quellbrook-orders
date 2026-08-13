@@ -31,7 +31,7 @@ public sealed class RabbitMqPublisherTests
             Arg.Do<ReadOnlyMemory<byte>>(value => body = value),
             Arg.Any<CancellationToken>());
 
-        await publisher.PublishAsync(messageId, "orders.order-placed.v1", new { OrderId = 42 }, TestContext.Current.CancellationToken);
+        await publisher.PublishAsync(messageId, "orders.order-placed.v1", "{\"orderId\":42}"u8.ToArray(), TestContext.Current.CancellationToken);
 
         await _channel.Received(1).ExchangeDeclareAsync(
             "quellbrook.events", ExchangeType.Topic, true, Arg.Is(false), Arg.Any<IDictionary<string, object?>?>(),

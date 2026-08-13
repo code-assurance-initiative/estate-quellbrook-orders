@@ -11,22 +11,20 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
-using Quellbrook.Orders.Application.Abstractions;
+using Quellbrook.Orders.Infrastructure.Outbox;
 using Quellbrook.Orders.Infrastructure.Persistence;
 
 namespace Quellbrook.Orders.IntegrationTests;
 
 /// <summary>
-/// Hosts the real API in memory over a throw-away SQLite database, with the broker and the token issuer replaced by
-/// in-process stand-ins.
+/// Hosts the real API in memory over a throw-away SQLite database and an in-process token issuer. The outbox relay
+/// does not run; tests read the outbox table to see what would be published.
 /// </summary>
 public sealed class OrdersApiFactory : WebApplicationFactory<Program>
 {
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
 
     public TestTokens Tokens { get; } = new();
-
-    public RecordingPublisher Publisher { get; } = new();
 
     public HttpClient CreateClient(string? operatorId, params string[] scopes)
     {
@@ -60,8 +58,7 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>
             services.AddDbContext<OrdersDbContext>(options => options
                 .UseSqlite(_connection)
                 .ReplaceService<IModelCustomizer, SqliteModelCustomizer>());
-            services.RemoveAll<IIntegrationEventPublisher>();
-            services.AddSingleton<IIntegrationEventPublisher>(Publisher);
+            services.RemoveAll<IHostedService>();
             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
             {
                 var metadata = Tokens.Metadata();
@@ -77,6 +74,12 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>
         using var scope = host.Services.CreateScope();
         scope.ServiceProvider.GetRequiredService<OrdersDbContext>().Database.EnsureCreated();
         return host;
+    }
+
+    public List<OutboxMessage> Outbox()
+    {
+        using var scope = Services.CreateScope();
+        return [.. scope.ServiceProvider.GetRequiredService<OrdersDbContext>().OutboxMessages];
     }
 
     protected override void Dispose(bool disposing)

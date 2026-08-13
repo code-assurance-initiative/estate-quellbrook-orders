@@ -1,6 +1,5 @@
-using System.Text.Json;
 using Microsoft.Extensions.Options;
-using Quellbrook.Orders.Application.Abstractions;
+using Quellbrook.Orders.Infrastructure.Outbox;
 using RabbitMQ.Client;
 
 namespace Quellbrook.Orders.Infrastructure.Messaging;
@@ -10,18 +9,9 @@ namespace Quellbrook.Orders.Infrastructure.Messaging;
 /// for the broker's publisher confirmation.
 /// </summary>
 public sealed class RabbitMqPublisher(IRabbitMqConnectionProvider connections, IOptions<RabbitMqOptions> options)
-    : IIntegrationEventPublisher
+    : IOutboxPublisher
 {
-    private static readonly JsonSerializerOptions s_json = new(JsonSerializerDefaults.Web);
-
-    public async Task PublishAsync<T>(Guid messageId, string eventType, T payload, CancellationToken cancellationToken)
-        where T : class
-    {
-        var body = JsonSerializer.SerializeToUtf8Bytes(payload, s_json);
-        await PublishRawAsync(messageId, eventType, body, cancellationToken).ConfigureAwait(false);
-    }
-
-    public async Task PublishRawAsync(Guid messageId, string eventType, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
+    public async Task PublishAsync(Guid messageId, string eventType, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
     {
         var exchange = options.Value.Exchange;
         var connection = await connections.GetConnectionAsync(cancellationToken).ConfigureAwait(false);

@@ -45,6 +45,31 @@ public sealed class EfOrderRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task SavingWritesOneOutboxMessagePerEventInTheSameTransaction()
+    {
+        var order = OrderData.Placed();
+        using (var context = _db.CreateContext())
+        {
+            var repository = new EfOrderRepository(context);
+            repository.Add(order);
+            await repository.SaveChangesAsync(TestContext.Current.CancellationToken);
+            var loaded = await repository.FindAsync(order.Id, TestContext.Current.CancellationToken);
+            Assert.NotNull(loaded);
+            loaded.Cancel("Shipper withdrew the order", "operator-4", OrderData.PlacedAt.AddHours(1));
+            await repository.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var reading = _db.CreateContext();
+        var messages = reading.OutboxMessages.OrderBy(message => message.OccurredAt).ToList();
+        Assert.Equal(["orders.order-placed.v1", "orders.order-cancelled.v1"], messages.Select(message => message.Type));
+        Assert.All(messages, message => Assert.Null(message.DispatchedAt));
+        Assert.Contains("\"reason\":\"Shipper withdrew the order\"", messages[1].Payload, StringComparison.Ordinal);
+        var stored = await new EfOrderRepository(reading).FindAsync(order.Id, TestContext.Current.CancellationToken);
+        Assert.Equal(OrderStatus.Cancelled, stored?.Status);
+        Assert.Equal("operator-4", stored?.CancelledBy);
+    }
+
+    [Fact]
     public async Task AnUnknownOrderIsNotFound()
     {
         using var context = _db.CreateContext();

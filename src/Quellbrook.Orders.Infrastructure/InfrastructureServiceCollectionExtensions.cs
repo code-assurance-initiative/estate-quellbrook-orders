@@ -1,10 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Quellbrook.Orders.Application.Abstractions;
 using Quellbrook.Orders.Application.Queries;
 using Quellbrook.Orders.Domain.Orders;
 using Quellbrook.Orders.Infrastructure.Messaging;
+using Quellbrook.Orders.Infrastructure.Outbox;
 using Quellbrook.Orders.Infrastructure.Persistence;
 
 namespace Quellbrook.Orders.Infrastructure;
@@ -22,7 +22,12 @@ public static class InfrastructureServiceCollectionExtensions
             .ValidateDataAnnotations()
             .ValidateOnStart();
         services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
-        services.AddSingleton<IIntegrationEventPublisher, RabbitMqPublisher>();
+        services.AddSingleton<IOutboxPublisher, RabbitMqPublisher>();
+        services.AddOptions<OutboxOptions>()
+            .BindConfiguration(OutboxOptions.SectionName)
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddHostedService<OutboxRelay>();
 
         services.AddHealthChecks().AddDbContextCheck<OrdersDbContext>("database", tags: ["ready"]);
         return services;

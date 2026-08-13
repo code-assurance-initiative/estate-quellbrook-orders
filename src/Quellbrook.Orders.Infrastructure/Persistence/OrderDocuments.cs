@@ -51,6 +51,9 @@ internal static class OrderDocuments
             s_json);
         record.PlacedBy = order.PlacedBy;
         record.PlacedAt = order.PlacedAt;
+        record.CancelledBy = order.CancelledBy;
+        record.CancelledAt = order.CancelledAt;
+        record.CancellationReason = order.CancellationReason;
     }
 
     public static Order ToOrder(OrderRecord record)
@@ -71,7 +74,10 @@ internal static class OrderDocuments
                 Dimensions.Create(parcel.LengthCm, parcel.WidthCm, parcel.HeightCm))),
             Enum.Parse<OrderStatus>(record.Status),
             record.PlacedBy,
-            record.PlacedAt);
+            record.PlacedAt,
+            record.CancelledAt is { } cancelledAt
+                ? new Cancellation(record.CancelledBy ?? string.Empty, cancelledAt, record.CancellationReason ?? string.Empty)
+                : null);
     }
 
     private static T Deserialize<T>(string json) =>

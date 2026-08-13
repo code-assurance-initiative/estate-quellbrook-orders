@@ -1,11 +1,29 @@
 using Quellbrook.Orders.Contracts.IntegrationEvents;
 using Quellbrook.Orders.Domain.Orders;
+using Quellbrook.Orders.Domain.Orders.Events;
 
 namespace Quellbrook.Orders.Application;
 
 /// <summary>Maps the Order aggregate to the published contract; the domain never sees the contract types.</summary>
 public static class OrderContractMapper
 {
+    /// <summary>The integration messages for the domain events an order raised in this unit of work.</summary>
+    public static IReadOnlyList<IntegrationMessage> ToIntegrationMessages(Order order)
+    {
+        ArgumentNullException.ThrowIfNull(order);
+        return [.. order.DomainEvents.Select(domainEvent => domainEvent switch
+        {
+            OrderPlaced placed => new IntegrationMessage(
+                Guid.CreateVersion7(placed.OccurredAt), OrderPlacedV1.EventType, ToOrderPlaced(order), placed.OccurredAt),
+            OrderCancelled cancelled => new IntegrationMessage(
+                Guid.CreateVersion7(cancelled.OccurredAt),
+                OrderCancelledV1.EventType,
+                new OrderCancelledV1(cancelled.OrderId.Value, cancelled.Reason, cancelled.OccurredAt),
+                cancelled.OccurredAt),
+            _ => throw new InvalidOperationException($"No integration event for {domainEvent.GetType().Name}."),
+        })];
+    }
+
     public static OrderPlacedV1 ToOrderPlaced(Order order)
     {
         ArgumentNullException.ThrowIfNull(order);

@@ -1,6 +1,4 @@
 using Microsoft.Extensions.Logging;
-using Quellbrook.Orders.Application.Abstractions;
-using Quellbrook.Orders.Contracts.IntegrationEvents;
 using Quellbrook.Orders.Domain.Common;
 using Quellbrook.Orders.Domain.Orders;
 
@@ -8,7 +6,6 @@ namespace Quellbrook.Orders.Application.PlaceOrder;
 
 public sealed partial class PlaceOrderHandler(
     IOrderRepository orders,
-    IIntegrationEventPublisher publisher,
     TimeProvider time,
     ILogger<PlaceOrderHandler> logger)
 {
@@ -27,11 +24,6 @@ public sealed partial class PlaceOrderHandler(
 
         orders.Add(order);
         await orders.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await publisher.PublishAsync(
-            Guid.CreateVersion7(order.PlacedAt),
-            OrderPlacedV1.EventType,
-            OrderContractMapper.ToOrderPlaced(order),
-            cancellationToken).ConfigureAwait(false);
 
         LogOrderPlaced(order.Id.Value, order.Customer.Value);
         return OperationResult.Succeeded(order.Id);
