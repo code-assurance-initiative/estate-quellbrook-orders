@@ -35,8 +35,8 @@ public sealed class OrdersApiTests(OrdersApiFactory factory) : IClassFixture<Ord
         Assert.Equal("placed", order.Status);
         Assert.Equal("operator-17", order.PlacedBy);
         Assert.Equal(2400, order.TotalWeightGrams);
-        Assert.Contains(factory.Publisher.Published, message =>
-            message.EventType == OrderPlacedV1.EventType && ((OrderPlacedV1)message.Payload).OrderId == order.Id);
+        Assert.Contains(factory.Outbox(), message =>
+            message.Type == OrderPlacedV1.EventType && message.Payload.Contains(order.Id.ToString(), StringComparison.Ordinal));
     }
 
     [Fact]
@@ -90,6 +90,34 @@ public sealed class OrdersApiTests(OrdersApiFactory factory) : IClassFixture<Ord
         var client = factory.CreateClient(null, "orders:write");
 
         var response = await client.PostAsJsonAsync("/orders", NewOrder(), TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task AnOrderCanBeCancelledOnceWithAReason()
+    {
+        var client = factory.CreateClient("operator-4", "orders:read", "orders:write");
+        var created = await client.PostAsJsonAsync("/orders", NewOrder(), TestContext.Current.CancellationToken);
+
+        var cancelled = await client.PostAsJsonAsync($"{created.Headers.Location}/cancellation", new { reason = "Shipper withdrew the order" }, TestContext.Current.CancellationToken);
+        var again = await client.PostAsJsonAsync($"{created.Headers.Location}/cancellation", new { reason = "again" }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.NoContent, cancelled.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+        var order = await client.GetFromJsonAsync<OrderDto>(created.Headers.Location, TestContext.Current.CancellationToken);
+        Assert.NotNull(order);
+        Assert.Equal("cancelled", order.Status);
+        Assert.Contains(factory.Outbox(), message =>
+            message.Type == OrderCancelledV1.EventType && message.Payload.Contains(order.Id.ToString(), StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CancellingNeedsAReason()
+    {
+        var client = factory.CreateClient("operator-4", "orders:write");
+
+        var response = await client.PostAsJsonAsync($"/orders/{Guid.NewGuid()}/cancellation", new { reason = "" }, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }

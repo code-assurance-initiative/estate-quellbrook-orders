@@ -12,7 +12,8 @@ public sealed record OrderResponse(
     IReadOnlyList<ParcelResponse> Parcels,
     int TotalWeightGrams,
     string PlacedBy,
-    DateTimeOffset PlacedAt)
+    DateTimeOffset PlacedAt,
+    CancellationResponse? Cancellation)
 {
     public static OrderResponse From(Order order)
     {
@@ -41,7 +42,10 @@ public sealed record OrderResponse(
                 parcel.Dimensions.HeightCm))],
             order.TotalWeightGrams,
             order.PlacedBy,
-            order.PlacedAt);
+            order.PlacedAt,
+            order.CancelledAt is { } cancelledAt
+                ? new CancellationResponse(order.CancelledBy ?? string.Empty, cancelledAt, order.CancellationReason ?? string.Empty)
+                : null);
     }
 }
 
@@ -56,3 +60,5 @@ public sealed record ConsigneeResponse(
     string? Phone);
 
 public sealed record ParcelResponse(int Number, int WeightGrams, int LengthCm, int WidthCm, int HeightCm);
+
+public sealed record CancellationResponse(string By, DateTimeOffset At, string Reason);
