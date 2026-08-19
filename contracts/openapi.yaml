@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Quellbrook Orders API
-  version: 0.1.0
+  version: 0.2.0
   description: Order service of the Quellbrook operations platform. Called by the API gateway only.
 servers:
   - url: http://quellbrook-orders.quellbrook-orders.svc.cluster.local
@@ -46,6 +46,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrderPage'
+  /orders/{id}/cancellation:
+    post:
+      summary: Cancel an order
+      security:
+        - bearer: [orders:write]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '204':
+          description: Cancelled.
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
   /orders/{id}:
     get:
       summary: Read one order
@@ -138,6 +167,12 @@ components:
         totalWeightGrams: { type: integer }
         placedBy: { type: string }
         placedAt: { type: string, format: date-time }
+        cancellation:
+          type: [object, 'null']
+          properties:
+            by: { type: string }
+            at: { type: string, format: date-time }
+            reason: { type: string }
     OrderPage:
       type: object
       properties:

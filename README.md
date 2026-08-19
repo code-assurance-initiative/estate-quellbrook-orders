@@ -16,6 +16,7 @@ consignee.
 | `POST /orders` | `orders:write` | Place an order (`X-Quellbrook-Operator` names the operator) |
 | `GET /orders/{id}` | `orders:read` | Read one order |
 | `GET /orders?page=&pageSize=` | `orders:read` | List orders, newest first |
+| `POST /orders/{id}/cancellation` | `orders:write` | Cancel an order with a reason |
 | `GET /health/live`, `GET /health/ready` | none | Liveness and readiness probes |
 
 The contract is `contracts/openapi.yaml`. Only the gateway holds a token with these scopes; it authenticates the
@@ -26,6 +27,11 @@ operator and forwards the operator's id.
 | Routing key | When |
 |---|---|
 | `orders.order-placed.v1` | an order was placed |
+| `orders.order-cancelled.v1` | an order was cancelled |
+
+Events are written to an outbox table in the same transaction as the order and published by a relay inside the
+service (ADR 0003), so an order and its event are stored together or not at all. Delivery is at least once;
+consumers de-duplicate on the AMQP `message-id`.
 
 ## Build and run
 
@@ -59,7 +65,7 @@ dotnet test Quellbrook.Orders.slnx
 `tests/Quellbrook.Orders.UnitTests` covers the Order aggregate and its value objects, the command handlers, the
 repository and queries (over in-memory SQLite) and the broker publisher (against a substituted channel).
 `tests/Quellbrook.Orders.IntegrationTests` hosts the real API with `WebApplicationFactory` over in-memory SQLite, an
-in-process token issuer and a recording publisher. No test touches the network.
+in-process token issuer; tests read the outbox table to see what would be published. No test touches the network.
 
 ## Architecture
 
