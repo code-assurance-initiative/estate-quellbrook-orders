@@ -10,7 +10,8 @@ namespace Quellbrook.Orders.Infrastructure.Outbox;
 
 /// <summary>
 /// Publishes stored messages in the order they occurred and marks each one dispatched (ADR 0003). A failure stops the
-/// batch so that order is kept; the message is retried on the next poll.
+/// batch so that order is kept; the message is retried on the next poll. Dispatched messages are deleted after the
+/// retention period.
 /// </summary>
 public sealed partial class OutboxRelay(
     IServiceScopeFactory scopes,
@@ -55,14 +56,38 @@ public sealed partial class OutboxRelay(
         return dispatched;
     }
 
+    /// <summary>Deletes dispatched messages older than the retention period; returns how many.</summary>
+    public async Task<int> PurgeExpiredAsync(CancellationToken cancellationToken)
+    {
+        using var scope = scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
+        var cutoff = time.GetUtcNow() - options.Value.Retention;
+        var purged = await db.OutboxMessages
+            .Where(message => message.DispatchedAt != null && message.DispatchedAt < cutoff)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (purged > 0)
+        {
+            LogPurged(purged, cutoff);
+        }
+
+        return purged;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(options.Value.PollInterval, time);
+        var nextPurge = time.GetUtcNow();
         while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
         {
             try
             {
                 await DispatchPendingAsync(stoppingToken).ConfigureAwait(false);
+                if (time.GetUtcNow() >= nextPurge)
+                {
+                    await PurgeExpiredAsync(stoppingToken).ConfigureAwait(false);
+                    nextPurge = time.GetUtcNow() + options.Value.PurgeInterval;
+                }
             }
             catch (DbUpdateException exception)
             {
@@ -73,6 +98,9 @@ public sealed partial class OutboxRelay(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Publishing outbox message {MessageId} ({EventType}) failed, attempt {Attempts}; retrying on the next poll")]
     private partial void LogPublishFailed(Exception exception, Guid messageId, string eventType, int attempts);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Deleted {Count} outbox messages dispatched before {Cutoff}")]
+    private partial void LogPurged(int count, DateTimeOffset cutoff);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "The outbox could not be updated; retrying on the next poll")]
     private partial void LogStoreFailed(Exception exception);

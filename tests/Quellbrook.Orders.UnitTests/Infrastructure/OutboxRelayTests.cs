@@ -75,6 +75,24 @@ public sealed class OutboxRelayTests : IDisposable
         Assert.Equal(2, dispatched);
     }
 
+    [Fact]
+    public async Task DispatchedMessagesOlderThanTheRetentionAreDeletedAndPendingOnesKept()
+    {
+        await StoreAsync(("orders.order-placed.v1", 1), ("orders.order-placed.v1", 2));
+        await Relay(batchSize: 1).DispatchPendingAsync(TestContext.Current.CancellationToken);
+
+        _time.Advance(TimeSpan.FromDays(6));
+        var early = await Relay().PurgeExpiredAsync(TestContext.Current.CancellationToken);
+        _time.Advance(TimeSpan.FromDays(2));
+        var due = await Relay().PurgeExpiredAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, early);
+        Assert.Equal(1, due);
+        using var context = _db.CreateContext();
+        var left = Assert.Single(context.OutboxMessages);
+        Assert.Null(left.DispatchedAt);
+    }
+
     private async Task StoreAsync(params (string Type, int Minute)[] messages)
     {
         using var context = _db.CreateContext();
