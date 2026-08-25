@@ -57,4 +57,26 @@ public sealed class ValueObjectTests
         Assert.Null(contact.Phone);
         Assert.Equal(ContactDetails.None, contact);
     }
+
+    [Fact]
+    public void PhoneNumbersAreStoredInInternationalForm() =>
+        Assert.Equal("+4520304050", ContactDetails.Create(null, "+45 20 30-40-50").Phone);
+
+    [Theory]
+    [InlineData("20304050")]
+    [InlineData("+45 2030 40x0")]
+    [InlineData("+0045203040")]
+    public void ANationalOrMalformedPhoneNumberIsRefused(string phone) =>
+        Assert.Throws<DomainException>(() => ContactDetails.Create(null, phone));
+
+    [Theory]
+    [InlineData("orders@halden-bikes")]
+    [InlineData("Halden <orders@halden-bikes.example>")]
+    [InlineData("not an address")]
+    public void AMalformedEmailAddressIsRefused(string email) =>
+        Assert.Throws<DomainException>(() => ContactDetails.Create(email, null));
+
+    [Fact]
+    public void AWellFormedEmailAddressIsKept() =>
+        Assert.Equal("orders@halden-bikes.example", ContactDetails.Create("orders@halden-bikes.example", null).Email);
 }
