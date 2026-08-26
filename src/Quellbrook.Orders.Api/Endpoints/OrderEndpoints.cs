@@ -79,7 +79,8 @@ public static class OrderEndpoints
     private static async Task<IResult> ListAsync(
         IOrderQueries queries,
         int page = 1,
-        int pageSize = 25)
+        int pageSize = 25,
+        string? status = null)
     {
         if (page < 1 || pageSize is < 1 or > MaxPageSize)
         {
@@ -89,6 +90,22 @@ public static class OrderEndpoints
             });
         }
 
-        return Results.Ok(await queries.ListAsync(page, pageSize).ConfigureAwait(false));
+        if (!TryParseStatus(status, out var wanted))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["must be placed or cancelled"] });
+        }
+
+        return Results.Ok(await queries.ListAsync(page, pageSize, wanted).ConfigureAwait(false));
+    }
+
+    private static bool TryParseStatus(string? value, out OrderStatus? status)
+    {
+        status = value switch
+        {
+            "placed" => OrderStatus.Placed,
+            "cancelled" => OrderStatus.Cancelled,
+            _ => null,
+        };
+        return status is not null || string.IsNullOrEmpty(value);
     }
 }

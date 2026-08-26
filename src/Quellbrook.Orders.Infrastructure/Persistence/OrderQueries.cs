@@ -1,13 +1,20 @@
 using Microsoft.EntityFrameworkCore;
 using Quellbrook.Orders.Application.Queries;
+using Quellbrook.Orders.Domain.Orders;
 
 namespace Quellbrook.Orders.Infrastructure.Persistence;
 
 public sealed class OrderQueries(OrdersDbContext db) : IOrderQueries
 {
-    public async Task<OrderPage> ListAsync(int page, int pageSize)
+    public async Task<OrderPage> ListAsync(int page, int pageSize, OrderStatus? status)
     {
         var orders = db.Orders.AsNoTracking();
+        if (status is { } wanted)
+        {
+            var stored = wanted.ToString();
+            orders = orders.Where(order => order.Status == stored);
+        }
+
         var total = await orders.CountAsync().ConfigureAwait(false);
         var items = await orders
             .OrderByDescending(order => order.PlacedAt)

@@ -21,5 +21,6 @@ internal sealed class OrderRecordConfiguration : IEntityTypeConfiguration<OrderR
         builder.Property(order => order.CancellationReason).HasMaxLength(200);
         builder.Property(order => order.Version).IsConcurrencyToken();
         builder.HasIndex(order => order.PlacedAt);
+        builder.HasIndex(order => new { order.Status, order.PlacedAt });
     }
 }

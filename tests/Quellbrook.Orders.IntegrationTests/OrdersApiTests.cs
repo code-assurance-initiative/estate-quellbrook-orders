@@ -53,6 +53,33 @@ public sealed class OrdersApiTests(OrdersApiFactory factory) : IClassFixture<Ord
     }
 
     [Fact]
+    public async Task AnUnknownStatusFilterIsRefused()
+    {
+        var client = factory.CreateClient("operator-17", "orders:read");
+
+        var response = await client.GetAsync("/orders?status=lost", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task AMalformedPhoneNumberIsUnprocessable()
+    {
+        var client = factory.CreateClient("operator-17", "orders:write");
+        var order = new
+        {
+            customerAccountId = "QB-104233",
+            serviceLevel = "standard",
+            consignee = new { name = "Halden Bikes ApS", line1 = "Søndergade 12", postalCode = "8000", city = "Aarhus C", countryCode = "DK", phone = "20304050" },
+            parcels = new[] { new { weightGrams = 2400, lengthCm = 40, widthCm = 30, heightCm = 20 } },
+        };
+
+        var response = await client.PostAsJsonAsync("/orders", order, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+    }
+
+    [Fact]
     public async Task AnOversizedPageIsRefused()
     {
         var client = factory.CreateClient("operator-17", "orders:read");
