@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quellbrook.example/contracts/orders/order-cancelled.v1.schema.json",
+  "title": "orders.order-cancelled.v1",
+  "description": "Published by the order service when an order is cancelled. Owned by the Orders team.",
+  "type": "object",
+  "required": ["orderId", "reason", "cancelledAt"],
+  "properties": {
+    "orderId": { "type": "string", "format": "uuid" },
+    "reason": { "type": "string", "maxLength": 200 },
+    "cancelledAt": { "type": "string", "format": "date-time" }
+  }
+}

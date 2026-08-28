@@ -1,0 +1,42 @@
+asyncapi: 3.0.0
+info:
+  title: Quellbrook order events
+  version: 1.0.0
+  description: Events published by the order service on the platform's RabbitMQ topic exchange.
+servers:
+  production:
+    host: rabbitmq.messaging.svc.cluster.local:5671
+    protocol: amqps
+    pathname: /quellbrook
+channels:
+  orderPlaced:
+    address: orders.order-placed.v1
+    messages:
+      orderPlaced:
+        $ref: '#/components/messages/orderPlaced'
+  orderCancelled:
+    address: orders.order-cancelled.v1
+    messages:
+      orderCancelled:
+        $ref: '#/components/messages/orderCancelled'
+operations:
+  publishOrderPlaced:
+    action: send
+    channel:
+      $ref: '#/channels/orderPlaced'
+  publishOrderCancelled:
+    action: send
+    channel:
+      $ref: '#/channels/orderCancelled'
+components:
+  messages:
+    orderPlaced:
+      contentType: application/json
+      correlationId:
+        location: $message.header#/message_id
+      payload:
+        $ref: './events/order-placed.v1.schema.json'
+    orderCancelled:
+      contentType: application/json
+      payload:
+        $ref: './events/order-cancelled.v1.schema.json'

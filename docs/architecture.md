@@ -88,5 +88,6 @@ sequenceDiagram
 | `orders.order-placed.v1` | `OrderPlacedV1`: order id, customer account, service level, consignee (name, address, optional e-mail and phone), parcels | dispatch, notifier |
 | `orders.order-cancelled.v1` | `OrderCancelledV1`: order id, reason, time | dispatch |
 
-Messages are JSON, persistent, with the AMQP `message-id` set; consumers de-duplicate on it. A v1 contract only gains
-optional fields; a breaking change is a new routing key (`.v2`) published alongside v1 until every consumer moved.
+Messages are JSON, persistent, with the AMQP `message-id` set; consumers de-duplicate on it. The schemas are in
+`contracts/events/` and `contracts/asyncapi.yaml`; they evolve by ADR 0004 (optional additions within a version, a new
+routing key for a breaking change). Dispatched outbox rows are deleted after seven days.

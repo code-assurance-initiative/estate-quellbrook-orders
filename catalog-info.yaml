@@ -13,6 +13,7 @@ spec:
   system: quellbrook-operations
   providesApis:
     - quellbrook-orders-api
+    - quellbrook-orders-events
   dependsOn:
     - resource:quellbrook-orders-db
     - resource:quellbrook-event-broker
@@ -29,3 +30,16 @@ spec:
   system: quellbrook-operations
   definition:
     $text: ./contracts/openapi.yaml
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: quellbrook-orders-events
+  description: Order events (orders.order-placed.v1, orders.order-cancelled.v1), consumed by dispatch and the notifier.
+spec:
+  type: asyncapi
+  lifecycle: production
+  owner: group:orders
+  system: quellbrook-operations
+  definition:
+    $text: ./contracts/asyncapi.yaml
