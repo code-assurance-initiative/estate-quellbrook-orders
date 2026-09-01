@@ -15,7 +15,7 @@ consignee.
 |---|---|---|
 | `POST /orders` | `orders:write` | Place an order (`X-Quellbrook-Operator` names the operator) |
 | `GET /orders/{id}` | `orders:read` | Read one order |
-| `GET /orders?page=&pageSize=` | `orders:read` | List orders, newest first |
+| `GET /orders?page=&pageSize=&status=` | `orders:read` | List orders, newest first, optionally only `placed` or `cancelled` |
 | `POST /orders/{id}/cancellation` | `orders:write` | Cancel an order with a reason |
 | `GET /health/live`, `GET /health/ready` | none | Liveness and readiness probes |
 
@@ -29,9 +29,15 @@ operator and forwards the operator's id.
 | `orders.order-placed.v1` | an order was placed |
 | `orders.order-cancelled.v1` | an order was cancelled |
 
-Events are written to an outbox table in the same transaction as the order and published by a relay inside the
+The payloads are specified as JSON Schemas in `contracts/events/` and listed in `contracts/asyncapi.yaml`; how they
+may evolve is ADR 0004. Events are written to an outbox table in the same transaction as the order and published by a relay inside the
 service (ADR 0003), so an order and its event are stored together or not at all. Delivery is at least once;
 consumers de-duplicate on the AMQP `message-id`.
+
+## Personal data
+
+Orders hold the consignee's name, address and optional contact details. What is kept, why and for how long is in
+[docs/privacy.md](docs/privacy.md).
 
 ## Build and run
 
@@ -52,6 +58,7 @@ dotnet run --project src/Quellbrook.Orders.Api
 | `ConnectionStrings__Orders` | PostgreSQL connection string (a Kubernetes Secret in production) |
 | `Authentication__Authority`, `Authentication__Audience` | the OpenID Connect issuer and this API's audience |
 | `RabbitMq__Uri`, `RabbitMq__UserName`, `RabbitMq__Password`, `RabbitMq__Exchange` | the broker; credentials from a Secret |
+| `Outbox__PollInterval`, `Outbox__BatchSize`, `Outbox__Retention` | outbox relay tuning; dispatched messages are deleted after `Retention` (7 days) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | where traces, metrics and logs are exported, when set |
 
 Secrets are never written to `appsettings*.json`; supply them through environment variables or user secrets.
