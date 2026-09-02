@@ -44,6 +44,18 @@ public sealed class PlaceOrderHandlerTests
     }
 
     [Fact]
+    public async Task PlacingAgainWithTheSameIdempotencyKeyReturnsTheFirstOrder()
+    {
+        var command = OrderData.Command() with { IdempotencyKey = "form-7f3a2c" };
+
+        var first = await Handler().HandleAsync(command, TestContext.Current.CancellationToken);
+        var second = await Handler().HandleAsync(command, TestContext.Current.CancellationToken);
+
+        Assert.Equal(first.Value, second.Value);
+        Assert.Single(_orders.Stored);
+    }
+
+    [Fact]
     public async Task TooManyParcelsForExpressIsInvalid()
     {
         var result = await Handler().HandleAsync(OrderData.Command(serviceLevel: "express", parcels: 6), TestContext.Current.CancellationToken);

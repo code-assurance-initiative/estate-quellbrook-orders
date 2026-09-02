@@ -5,7 +5,8 @@ public sealed record PlaceOrderCommand(
     string ServiceLevel,
     ConsigneeInput Consignee,
     IReadOnlyList<ParcelInput> Parcels,
-    string Operator);
+    string Operator,
+    string? IdempotencyKey = null);
 
 public sealed record ConsigneeInput(
     string Name,

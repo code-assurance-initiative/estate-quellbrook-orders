@@ -53,7 +53,7 @@ public sealed class OrderTests
         var placed = OrderData.Placed();
 
         var restored = Order.Restore(placed.Id, placed.Customer, placed.Consignee, placed.ServiceLevel, placed.Parcels,
-            placed.Status, placed.PlacedBy, placed.PlacedAt);
+            placed.Status, placed.PlacedBy, placed.PlacedAt, placed.RequestKey, cancellation: null);
 
         Assert.Empty(restored.DomainEvents);
         Assert.Equal(placed.TotalWeightGrams, restored.TotalWeightGrams);

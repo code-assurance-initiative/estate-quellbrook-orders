@@ -15,6 +15,11 @@ paths:
         - bearer: [orders:write]
       parameters:
         - $ref: '#/components/parameters/Operator'
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: One key per submission; a retry with the same key returns the order the first one placed.
+          schema: { type: string, maxLength: 64 }
       requestBody:
         required: true
         content:

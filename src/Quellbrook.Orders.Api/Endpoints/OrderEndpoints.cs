@@ -22,53 +22,32 @@ public static class OrderEndpoints
         return app;
     }
 
-    private static async Task<IResult> PlaceAsync(
+    private static Task<IResult> PlaceAsync(
         PlaceOrderRequest request,
         HttpRequest http,
         PlaceOrderHandler handler,
-        CancellationToken cancellationToken)
-    {
-        var operatorId = OperatorHeader.From(http);
-        if (operatorId is null)
+        CancellationToken cancellationToken) =>
+        EndpointResults.ForOperatorAsync(http, request.Validate(), async operatorId =>
         {
-            return EndpointResults.MissingOperator();
-        }
+            var command = request.ToCommand(operatorId, IdempotencyKey.From(http));
+            var result = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
+            return result.Status == OperationStatus.Succeeded
+                ? Results.Created($"/orders/{result.Value}", new { id = result.Value.Value })
+                : EndpointResults.Problem(result);
+        });
 
-        var errors = request.Validate();
-        if (errors.Count > 0)
-        {
-            return Results.ValidationProblem(errors);
-        }
-
-        var result = await handler.HandleAsync(request.ToCommand(operatorId), cancellationToken).ConfigureAwait(false);
-        return result.Status == OperationStatus.Succeeded
-            ? Results.Created($"/orders/{result.Value}", new { id = result.Value.Value })
-            : EndpointResults.Problem(result);
-    }
-
-    private static async Task<IResult> CancelAsync(
+    private static Task<IResult> CancelAsync(
         Guid id,
         CancelOrderRequest request,
         HttpRequest http,
         CancelOrderHandler handler,
-        CancellationToken cancellationToken)
-    {
-        var operatorId = OperatorHeader.From(http);
-        if (operatorId is null)
+        CancellationToken cancellationToken) =>
+        EndpointResults.ForOperatorAsync(http, request.Validate(), async operatorId =>
         {
-            return EndpointResults.MissingOperator();
-        }
-
-        var errors = request.Validate();
-        if (errors.Count > 0)
-        {
-            return Results.ValidationProblem(errors);
-        }
-
-        var result = await handler.HandleAsync(new CancelOrderCommand(id, request.Reason ?? string.Empty, operatorId), cancellationToken)
-            .ConfigureAwait(false);
-        return result.Status == OperationStatus.Succeeded ? Results.NoContent() : EndpointResults.Problem(result);
-    }
+            var command = new CancelOrderCommand(id, request.Reason ?? string.Empty, operatorId);
+            var result = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
+            return result.Status == OperationStatus.Succeeded ? Results.NoContent() : EndpointResults.Problem(result);
+        });
 
     private static async Task<IResult> GetAsync(Guid id, IOrderRepository orders, CancellationToken cancellationToken)
     {

@@ -29,6 +29,8 @@ public sealed class OrderRecord
 
     public DateTimeOffset PlacedAt { get; set; }
 
+    public string? RequestKey { get; set; }
+
     public string? CancelledBy { get; set; }
 
     public DateTimeOffset? CancelledAt { get; set; }

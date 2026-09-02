@@ -19,7 +19,8 @@ public sealed class Order : AggregateRoot
         ServiceLevel serviceLevel,
         List<Parcel> parcels,
         string placedBy,
-        DateTimeOffset placedAt)
+        DateTimeOffset placedAt,
+        string? requestKey)
     {
         Id = id;
         Customer = customer;
@@ -28,6 +29,7 @@ public sealed class Order : AggregateRoot
         _parcels = parcels;
         PlacedBy = placedBy;
         PlacedAt = placedAt;
+        RequestKey = requestKey;
         Status = OrderStatus.Placed;
     }
 
@@ -48,6 +50,12 @@ public sealed class Order : AggregateRoot
 
     public DateTimeOffset PlacedAt { get; }
 
+    /// <summary>
+    /// The caller's idempotency key for the request that placed the order, if it sent one: placing again with the
+    /// same key returns this order instead of placing a second one.
+    /// </summary>
+    public string? RequestKey { get; }
+
     public string? CancelledBy { get; private set; }
 
     public DateTimeOffset? CancelledAt { get; private set; }
@@ -63,7 +71,8 @@ public sealed class Order : AggregateRoot
         ServiceLevel serviceLevel,
         IReadOnlyList<ParcelSpecification> parcels,
         string placedBy,
-        DateTimeOffset placedAt)
+        DateTimeOffset placedAt,
+        string? requestKey = null)
     {
         ArgumentNullException.ThrowIfNull(customer);
         ArgumentNullException.ThrowIfNull(consignee);
@@ -72,7 +81,7 @@ public sealed class Order : AggregateRoot
         EnsureParcelsAllowed(serviceLevel, parcels);
 
         var numbered = parcels.Select((specification, index) => Parcel.Create(index + 1, specification)).ToList();
-        var order = new Order(id, customer, consignee, serviceLevel, numbered, placedBy, placedAt);
+        var order = new Order(id, customer, consignee, serviceLevel, numbered, placedBy, placedAt, requestKey);
         order.Raise(new OrderPlaced(id, placedAt));
         return order;
     }
@@ -87,8 +96,9 @@ public sealed class Order : AggregateRoot
         OrderStatus status,
         string placedBy,
         DateTimeOffset placedAt,
-        Cancellation? cancellation = null) =>
-        new(id, customer, consignee, serviceLevel, [.. parcels], placedBy, placedAt)
+        string? requestKey,
+        Cancellation? cancellation) =>
+        new(id, customer, consignee, serviceLevel, [.. parcels], placedBy, placedAt, requestKey)
         {
             Status = status,
             CancelledBy = cancellation?.By,

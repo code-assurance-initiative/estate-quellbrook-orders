@@ -12,6 +12,12 @@ public sealed partial class PlaceOrderHandler(
     public async Task<OperationResult<OrderId>> HandleAsync(PlaceOrderCommand command, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (command.IdempotencyKey is { } key
+            && await orders.FindByRequestKeyAsync(key, cancellationToken).ConfigureAwait(false) is { } placedBefore)
+        {
+            return OperationResult.Succeeded(placedBefore.Id);
+        }
+
         Order order;
         try
         {
@@ -48,7 +54,8 @@ public sealed partial class PlaceOrderHandler(
             ParseServiceLevel(command.ServiceLevel),
             parcels,
             command.Operator,
-            now);
+            now,
+            command.IdempotencyKey);
     }
 
     private static ServiceLevel ParseServiceLevel(string value) => value switch

@@ -41,13 +41,14 @@ public sealed record PlaceOrderRequest(
     }
 
     /// <summary>Call only after <see cref="Validate"/> returned no errors.</summary>
-    public PlaceOrderCommand ToCommand(string operatorId) =>
+    public PlaceOrderCommand ToCommand(string operatorId, string? idempotencyKey) =>
         new(
             CustomerAccountId ?? string.Empty,
             ServiceLevel ?? string.Empty,
             Consignee?.ToInput() ?? throw new InvalidOperationException("Validate the request first."),
             [.. (Parcels ?? []).Select(parcel => parcel.ToInput())],
-            operatorId);
+            operatorId,
+            idempotencyKey);
 }
 
 public sealed record ConsigneeRequest(

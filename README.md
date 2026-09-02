@@ -13,7 +13,7 @@ consignee.
 
 | Method and path | Scope | What it does |
 |---|---|---|
-| `POST /orders` | `orders:write` | Place an order (`X-Quellbrook-Operator` names the operator) |
+| `POST /orders` | `orders:write` | Place an order (`X-Quellbrook-Operator` names the operator; an optional `Idempotency-Key` makes a retried submission return the first order) |
 | `GET /orders/{id}` | `orders:read` | Read one order |
 | `GET /orders?page=&pageSize=&status=` | `orders:read` | List orders, newest first, optionally only `placed` or `cancelled` |
 | `POST /orders/{id}/cancellation` | `orders:write` | Cancel an order with a reason |

@@ -51,6 +51,7 @@ internal static class OrderDocuments
             s_json);
         record.PlacedBy = order.PlacedBy;
         record.PlacedAt = order.PlacedAt;
+        record.RequestKey = order.RequestKey;
         record.CancelledBy = order.CancelledBy;
         record.CancelledAt = order.CancelledAt;
         record.CancellationReason = order.CancellationReason;
@@ -75,6 +76,7 @@ internal static class OrderDocuments
             Enum.Parse<OrderStatus>(record.Status),
             record.PlacedBy,
             record.PlacedAt,
+            record.RequestKey,
             record.CancelledAt is { } cancelledAt
                 ? new Cancellation(record.CancelledBy ?? string.Empty, cancelledAt, record.CancellationReason ?? string.Empty)
                 : null);

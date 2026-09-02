@@ -40,6 +40,19 @@ public sealed class OrdersApiTests(OrdersApiFactory factory) : IClassFixture<Ord
     }
 
     [Fact]
+    public async Task ARetriedSubmissionWithTheSameIdempotencyKeyPlacesOneOrder()
+    {
+        var client = factory.CreateClient("operator-17", "orders:read", "orders:write");
+        client.DefaultRequestHeaders.Add("Idempotency-Key", $"form-{Guid.NewGuid():N}");
+
+        var first = await client.PostAsJsonAsync("/orders", NewOrder(), TestContext.Current.CancellationToken);
+        var retry = await client.PostAsJsonAsync("/orders", NewOrder(), TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Created, retry.StatusCode);
+        Assert.Equal(first.Headers.Location, retry.Headers.Location);
+    }
+
+    [Fact]
     public async Task OrdersAreListedAPageAtATime()
     {
         var client = factory.CreateClient("operator-17", "orders:read", "orders:write");

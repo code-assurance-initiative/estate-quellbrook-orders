@@ -30,8 +30,24 @@ public sealed class EfOrderRepository(OrdersDbContext db) : IOrderRepository
             return null;
         }
 
+        return Track(record);
+    }
+
+    public async Task<Order?> FindByRequestKeyAsync(string requestKey, CancellationToken cancellationToken)
+    {
+        var record = await db.Orders.SingleOrDefaultAsync(order => order.RequestKey == requestKey, cancellationToken).ConfigureAwait(false);
+        if (record is null)
+        {
+            return null;
+        }
+
+        return _tracked.TryGetValue(record.Id, out var tracked) ? tracked.Order : Track(record);
+    }
+
+    private Order Track(OrderRecord record)
+    {
         var order = OrderDocuments.ToOrder(record);
-        _tracked[id.Value] = (order, record);
+        _tracked[record.Id] = (order, record);
         return order;
     }
 
