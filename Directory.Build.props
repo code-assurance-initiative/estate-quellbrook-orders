@@ -10,7 +10,7 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreLockedMode Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</RestoreLockedMode>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Authors>Quellbrook Freight</Authors>
     <Copyright>Copyright (c) 2026 Quellbrook Freight</Copyright>
   </PropertyGroup>
