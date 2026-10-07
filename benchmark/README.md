@@ -51,24 +51,28 @@ which quality rises. The commits that tell the story are listed in `benchmark/hi
 
 | Id | Concept | Site | Why |
 |---|---|---|---|
-| ORD-001 | `publicly-mutable-entity-state` | `src/Quellbrook.Orders.Domain/Orders/Parcel.cs:12-16` | Parcel is an entity inside the Order aggregate, yet its weight and dimensions have public setters: any code holding an order can change a parcel after the order was placed, bypassing the aggregate's weight and size limits (Order.Place validates them once) and raising no domain event, so the published OrderPlaced contract and the stored order can disagree. |
-| ORD-002 | `missing-cancellation-propagation` | `src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs:40-52` | The order-list query accepts the request's CancellationToken but does not pass it to the two database round-trips it makes (the count and the page). A client that disconnects, or a gateway timeout, leaves the query running against PostgreSQL to completion. |
+| ORD-001 | `publicly-mutable-entity-state` | `src/Quellbrook.Orders.Domain/Orders/Parcel.cs:15-17` | Parcel is an entity inside the Order aggregate, yet its weight and dimensions have public setters: any code holding an order can change a parcel after the order was placed, bypassing the aggregate's weight and size limits (Order.Place validates them once) and raising no domain event, so the published OrderPlaced contract and the stored order can disagree. |
+| ORD-002 | `missing-cancellation-propagation` | `src/Quellbrook.Orders.Infrastructure/Persistence/OrderQueries.cs:9-35` | The order-list query performs two database round-trips (the count and the page) and takes no CancellationToken, so the endpoint cannot hand it the request's: a client that disconnects, or a gateway timeout, leaves the query running against PostgreSQL to completion. Every other async path in the service accepts and forwards a token. |
 
 ## Traps (`must-not-fire`)
 
 | Id | Concept | Site | Why |
 |---|---|---|---|
-| TRP-001 | `dual-write-without-outbox` | `src/Quellbrook.Orders.Infrastructure/Messaging/OutboxRelay.cs:40-70` | The outbox relay publishes a stored message to the broker and then marks the row dispatched in a second write. That is the transactional-outbox pattern's relay, not a dual write: the business change and the message were committed together earlier; a crash between publish and mark re-publishes the same message id, which consumers de-duplicate. |
-| TRP-002 | `event-not-named-in-past-tense` | `src/Quellbrook.Orders.Api/Contracts/PlaceOrderRequest.cs:6` | PlaceOrderRequest is the HTTP request body of POST /orders, not an event; an imperative name is correct for a request. |
-| TRP-003 | `event-not-named-in-past-tense` | `src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs:5` | PlaceOrderCommand is a command handled by exactly one handler; commands are named in the imperative. |
-| TRP-004 | `personal-data-in-event-store` | `src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderPlacedV1.cs:8-16` | OrderPlacedV1 carries the consignee's name, address and optional contact details because dispatch and the notifier need them to deliver and to notify. It is an integration message, not a persisted event of an event store: the service stores state, not events, and the outbox row that carries it is deleted seven days after it was dispatched (OutboxRetention), so the personal data in it can be erased. |
+| TRP-001 | `dual-write-without-outbox` | `src/Quellbrook.Orders.Infrastructure/Outbox/OutboxRelay.cs:23-56` | The outbox relay publishes a stored message to the broker and then marks the row dispatched in a second write. That is the transactional-outbox pattern's relay, not a dual write: the business change and the message were committed together earlier; a crash between publish and mark re-publishes the same message id, which consumers de-duplicate. |
+| TRP-002 | `event-not-named-in-past-tense` | `src/Quellbrook.Orders.Api/Contracts/PlaceOrderRequest.cs:5` | PlaceOrderRequest is the HTTP request body of POST /orders, not an event; an imperative name is correct for a request. |
+| TRP-003 | `event-not-named-in-past-tense` | `src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs:3` | PlaceOrderCommand is a command handled by exactly one handler; commands are named in the imperative. |
+| TRP-004 | `personal-data-in-event-store` | `src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderPlacedV1.cs:7-24` | OrderPlacedV1 carries the consignee's name, address and optional contact details because dispatch and the notifier need them to deliver and to notify. It is an integration message, not a persisted event of an event store: the service stores state, not events, and the outbox row that carries it is deleted seven days after it was dispatched (OutboxRetention), so the personal data in it can be erased. |
 | TRP-005 | `primitive-entity-identifier` | `src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderPlacedV1.cs:8` | The published contract uses a plain Guid for the order id on purpose: a wire contract shared with other teams carries primitive types, and the domain's strongly typed OrderId is mapped at the boundary. |
-| TRP-006 | `hardcoded-credential` | `deploy/k8s/deployment.yaml:50-60` | The database connection string and the broker credentials are read from Kubernetes Secrets (secretKeyRef, materialised by an ExternalSecret); nothing secret is written in the manifest. |
+| TRP-006 | `hardcoded-credential` | `deploy/k8s/deployment.yaml:55-70` | The database connection string and the broker credentials are read from Kubernetes Secrets (secretKeyRef, materialised by an ExternalSecret); nothing secret is written in the manifest. |
 | TRP-007 | `suppressed-diagnostic` | `.editorconfig:36-37` | CA2007 (ConfigureAwait) is switched off at the repository root with its reason on the line above: tests must not call ConfigureAwait(false) (xUnit1030), and src/.editorconfig switches it back on as a warning for all production code. A scoped, documented suppression is not hidden debt. |
+| TRP-009 | `solution-structure` | `(repository)` | Quellbrook.Orders.Contracts is a small project on purpose: it holds only the published event contracts, so they can be versioned on their own and can never reference the domain (ADR 0002, ADR 0004). A thin contract assembly is the intended structure, not a project to consolidate. Repository-level: a scanner reports the solution's shape without a site. |
+| TRP-010 | `missing-image-healthcheck` | `src/Quellbrook.Orders.Api/Dockerfile` | The image runs only on Kubernetes, which ignores a Dockerfile HEALTHCHECK; liveness and readiness probes are declared in deploy/k8s/deployment.yaml (the Dockerfile says so in its header). |
+| TRP-011 | `compiled-code-size` | `src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs:8-10` | OrderRecordConfiguration.Configure is EF Core's fluent mapping of one table: a flat sequence of declarative calls with no branches. Its IL size grows with the number of columns, not with any logic a reader has to follow. |
+| TRP-008 | `cleartext-transmission` | `src/Quellbrook.Orders.Api/appsettings.Development.json:9` | appsettings.Development.json points the broker at amqp://localhost for a developer's local RabbitMQ container; production configuration (appsettings.json) uses amqps. Plain AMQP to the loopback interface crosses no network. |
 
 ## Certified clean
 
-Every tracked file will carry a `clean` entry, generated from the file list once the code exists: files without a label clean for every concept, labelled files for every finding concept except the labelled ones.
+145 `clean` entries, one per tracked file: files without a label are certified clean for every concept (`"*"`); a file that carries a plant or a trap is certified clean for every finding concept except the labelled ones and the concepts a result of those labels would restate.
 
 ## Not applicable
 
@@ -86,6 +90,7 @@ Every tracked file will carry a `clean` entry, generated from the file list once
 - `sensitive-data-in-browser-storage` — No browser code.
 - `nondeterministic-event-fold` — The service stores state, not events: no event-sourced aggregate, no fold.
 - `mutable-persisted-event` — The service stores state, not events: there is no event store.
+- `https-enforcement` — An internal API reachable only from the gateway's namespace, behind the cluster's service mesh, which encrypts and authenticates every connection with mutual TLS; the pod listens on plain HTTP to its sidecar by design. HTTPS redirection would break the gateway's calls and HSTS is a browser mechanism. Transport security is enforced, by the platform, not the process.
 
 ## Score bands
 
@@ -123,12 +128,11 @@ Bands were set from the intent of the code, before any scan, and are wide where 
 | BND-028 | `inconsistent-naming` | 60–100 | Model-judged. Consistent domain vocabulary. Wide band. |
 | BND-029 | `low-value-comments` | 60–100 | Model-judged. Comments explain why, not what. Wide band. |
 | BND-030 | `internal-api-inconsistency` | 60–100 | Model-judged. Endpoints and handlers follow one shape. Wide band. |
-| BND-031 | `security-response-headers` | 80–100 | CSP, X-Content-Type-Options, frame and referrer policy on every response; HSTS. |
-| BND-032 | `https-enforcement` | 80–100 | UseHttpsRedirection and UseHsts outside development. |
-| BND-033 | `authorization-enforcement` | 70–100 | Every endpoint but health requires a named scope policy. |
-| BND-034 | `inbound-input-validation` | 60–100 | Request bodies validated before they reach the domain; the domain re-checks its invariants. |
-| BND-035 | `versioned-schema-migrations` | 80–100 | EF Core migrations, one per schema change, applied by a migrations bundle. |
-| BND-036 | `data-retention-policy` | 0–60 | Outbox rows are purged seven days after dispatch, but orders (with consignee data) have no enforced retention yet; docs/privacy.md says so. |
-| BND-037 | `audit-trail` | 10–80 | Orders record the operator who placed or cancelled them; no general audit log. |
-| BND-038 | `data-subject-rights` | 0–50 | No erasure or export operation for consignee data. |
-| BND-039 | `data-encryption-controls` | 0–70 | TLS to the database and broker and encryption at rest by the platform; no field-level encryption. |
+| BND-031 | `security-response-headers` | 70–100 | CSP, X-Content-Type-Options, frame, referrer and resource policy on every response. |
+| BND-032 | `authorization-enforcement` | 70–100 | Every endpoint but health requires a named scope policy. |
+| BND-033 | `inbound-input-validation` | 60–100 | Request bodies validated before they reach the domain; the domain re-checks its invariants. |
+| BND-034 | `versioned-schema-migrations` | 80–100 | EF Core migrations, one per schema change, applied by a migrations bundle. |
+| BND-035 | `data-retention-policy` | 0–60 | Outbox rows are purged seven days after dispatch, but orders (with consignee data) have no enforced retention yet; docs/privacy.md says so. |
+| BND-036 | `audit-trail` | 10–80 | Orders record the operator who placed or cancelled them; no general audit log. |
+| BND-037 | `data-subject-rights` | 0–50 | No erasure or export operation for consignee data. |
+| BND-038 | `data-encryption-controls` | 0–70 | TLS to the database and broker and encryption at rest by the platform; no field-level encryption. |
