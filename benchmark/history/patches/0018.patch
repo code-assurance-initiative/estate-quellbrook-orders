@@ -1,0 +1,92 @@
+From 5a7c6d39b824f64b93849446258b851f39c55aa4 Mon Sep 17 00:00:00 2001
+From: Odile Marchetti <odile.marchetti@example.invalid>
+Date: Tue, 25 Aug 2026 10:31:06 +0200
+Subject: feat(domain): validate e-mail addresses and store phone numbers in
+ international form
+
+---
+ .../Orders/ContactDetails.cs                  | 31 +++++++++++++++++--
+ .../Domain/ValueObjectTests.cs                | 22 +++++++++++++
+ 2 files changed, 51 insertions(+), 2 deletions(-)
+
+diff --git a/src/Quellbrook.Orders.Domain/Orders/ContactDetails.cs b/src/Quellbrook.Orders.Domain/Orders/ContactDetails.cs
+index 5d3727c..7b27d03 100644
+--- a/src/Quellbrook.Orders.Domain/Orders/ContactDetails.cs
++++ b/src/Quellbrook.Orders.Domain/Orders/ContactDetails.cs
+@@ -1,10 +1,11 @@
++using System.Net.Mail;
+ using Quellbrook.Orders.Domain.Common;
+ 
+ namespace Quellbrook.Orders.Domain.Orders;
+ 
+ /// <summary>
+ /// How the consignee can be told about the delivery. Both parts are optional: a consignee without contact details
+-/// simply receives no notifications.
++/// simply receives no notifications. Phone numbers are stored in E.164 form so the SMS provider accepts them.
+ /// </summary>
+ public sealed record ContactDetails
+ {
+@@ -21,5 +22,31 @@ public sealed record ContactDetails
+     public string? Phone { get; }
+ 
+     public static ContactDetails Create(string? email, string? phone) =>
+-        new(Text.Optional(email, 254, nameof(email)), Text.Optional(phone, 20, nameof(phone)));
++        new(NormaliseEmail(Text.Optional(email, 254, nameof(email))), NormalisePhone(Text.Optional(phone, 20, nameof(phone))));
++
++    private static string? NormaliseEmail(string? email)
++    {
++        if (email is null)
++        {
++            return null;
++        }
++
++        return MailAddress.TryCreate(email, out var address) && address.Address == email && address.Host.Contains('.', StringComparison.Ordinal)
++            ? email
++            : throw new DomainException($"'{email}' is not an e-mail address.");
++    }
++
++    private static string? NormalisePhone(string? phone)
++    {
++        if (phone is null)
++        {
++            return null;
++        }
++
++        var compact = string.Concat(phone.Where(character => character is not (' ' or '-')));
++        var digits = compact.AsSpan(1);
++        var valid = compact.StartsWith('+') && digits.Length is >= 8 and <= 15 && digits[0] != '0'
++            && !digits.ContainsAnyExceptInRange('0', '9');
++        return valid ? compact : throw new DomainException("A phone number is written in international form, e.g. +45 20 30 40 50.");
++    }
+ }
+diff --git a/tests/Quellbrook.Orders.UnitTests/Domain/ValueObjectTests.cs b/tests/Quellbrook.Orders.UnitTests/Domain/ValueObjectTests.cs
+index 2679e92..7c26522 100644
+--- a/tests/Quellbrook.Orders.UnitTests/Domain/ValueObjectTests.cs
++++ b/tests/Quellbrook.Orders.UnitTests/Domain/ValueObjectTests.cs
+@@ -57,4 +57,26 @@ public sealed class ValueObjectTests
+         Assert.Null(contact.Phone);
+         Assert.Equal(ContactDetails.None, contact);
+     }
++
++    [Fact]
++    public void PhoneNumbersAreStoredInInternationalForm() =>
++        Assert.Equal("+4520304050", ContactDetails.Create(null, "+45 20 30-40-50").Phone);
++
++    [Theory]
++    [InlineData("20304050")]
++    [InlineData("+45 2030 40x0")]
++    [InlineData("+0045203040")]
++    public void ANationalOrMalformedPhoneNumberIsRefused(string phone) =>
++        Assert.Throws<DomainException>(() => ContactDetails.Create(null, phone));
++
++    [Theory]
++    [InlineData("orders@halden-bikes")]
++    [InlineData("Halden <orders@halden-bikes.example>")]
++    [InlineData("not an address")]
++    public void AMalformedEmailAddressIsRefused(string email) =>
++        Assert.Throws<DomainException>(() => ContactDetails.Create(email, null));
++
++    [Fact]
++    public void AWellFormedEmailAddressIsKept() =>
++        Assert.Equal("orders@halden-bikes.example", ContactDetails.Create("orders@halden-bikes.example", null).Email);
+ }

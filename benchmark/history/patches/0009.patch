@@ -1,0 +1,416 @@
+From df72416d4a01a284f74f1b0cf49cb7d68515e590 Mon Sep 17 00:00:00 2001
+From: Odile Marchetti <odile.marchetti@example.invalid>
+Date: Thu, 6 Aug 2026 11:28:55 +0200
+Subject: docs: README, architecture with C4 diagrams, API contract and catalog
+ entry
+
+---
+ README.md              |  83 +++++++++++++++++++++
+ SECURITY.md            |  22 ++++++
+ catalog-info.yaml      |  31 ++++++++
+ contracts/openapi.yaml | 159 +++++++++++++++++++++++++++++++++++++++++
+ docs/architecture.md   |  72 +++++++++++++++++++
+ 5 files changed, 367 insertions(+)
+ create mode 100644 README.md
+ create mode 100644 SECURITY.md
+ create mode 100644 catalog-info.yaml
+ create mode 100644 contracts/openapi.yaml
+ create mode 100644 docs/architecture.md
+
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..b5e409b
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,83 @@
++# Quellbrook Orders
++
++The order service of Quellbrook Freight's operations platform. Customer-service operators place orders for shippers
++— one consignee, one to twenty parcels, standard or same-day express service — through the operator console; the
++console reaches this service through the API gateway, over the cluster's service mesh (mutual TLS). The service validates the order against the carrier's rules,
++stores it in PostgreSQL and announces it to the rest of the platform as an `orders.order-placed.v1` event on the
++RabbitMQ topic exchange `quellbrook.events`, where the dispatch service plans its delivery and the notifier tells the
++consignee.
++
++**Owner:** the Orders team (`#team-orders`). **System:** Quellbrook operations platform (see `catalog-info.yaml`).
++
++## API
++
++| Method and path | Scope | What it does |
++|---|---|---|
++| `POST /orders` | `orders:write` | Place an order (`X-Quellbrook-Operator` names the operator) |
++| `GET /orders/{id}` | `orders:read` | Read one order |
++| `GET /orders?page=&pageSize=` | `orders:read` | List orders, newest first |
++| `GET /health/live`, `GET /health/ready` | none | Liveness and readiness probes |
++
++The contract is `contracts/openapi.yaml`. Only the gateway holds a token with these scopes; it authenticates the
++operator and forwards the operator's id.
++
++## Events
++
++| Routing key | When |
++|---|---|
++| `orders.order-placed.v1` | an order was placed |
++
++## Build and run
++
++Requires the .NET 10 SDK (`global.json`), a PostgreSQL 16 database and a RabbitMQ broker.
++
++```sh
++dotnet tool restore
++dotnet build Quellbrook.Orders.slnx
++export ConnectionStrings__Orders="Host=localhost;Database=orders;Username=orders"
++dotnet ef database update --project src/Quellbrook.Orders.Infrastructure
++dotnet run --project src/Quellbrook.Orders.Api
++```
++
++## Configuration
++
++| Setting | Meaning |
++|---|---|
++| `ConnectionStrings__Orders` | PostgreSQL connection string (a Kubernetes Secret in production) |
++| `Authentication__Authority`, `Authentication__Audience` | the OpenID Connect issuer and this API's audience |
++| `RabbitMq__Uri`, `RabbitMq__UserName`, `RabbitMq__Password`, `RabbitMq__Exchange` | the broker; credentials from a Secret |
++| `OTEL_EXPORTER_OTLP_ENDPOINT` | where traces, metrics and logs are exported, when set |
++
++Secrets are never written to `appsettings*.json`; supply them through environment variables or user secrets.
++
++## Testing
++
++```sh
++dotnet test Quellbrook.Orders.slnx
++```
++
++`tests/Quellbrook.Orders.UnitTests` covers the Order aggregate and its value objects, the command handlers, the
++repository and queries (over in-memory SQLite) and the broker publisher (against a substituted channel).
++`tests/Quellbrook.Orders.IntegrationTests` hosts the real API with `WebApplicationFactory` over in-memory SQLite, an
++in-process token issuer and a recording publisher. No test touches the network.
++
++## Architecture
++
++Domain, application, infrastructure and API projects, with dependencies pointing inward (ADR 0002). See
++[docs/architecture.md](docs/architecture.md) and the decision records in [docs/adr](docs/adr).
++
++## Deployment
++
++A published GitHub release builds the image and the migrations bundle (`.github/workflows/release.yml`); the manual
++`deploy.yml` workflow migrates the database and rolls the image out to the `quellbrook-orders` namespace
++(`deploy/k8s/`), rolling back when the new pods do not become ready.
++
++## Contributing
++
++Open a pull request against `main`. CI must be green and CodeQL must report no new alerts. Schema changes come with
++an EF Core migration (`dotnet ef migrations add`); never edit an applied migration. Record user-visible changes in
++`CHANGELOG.md`.
++
++## Licence
++
++MIT; see [LICENSE](LICENSE).
+diff --git a/SECURITY.md b/SECURITY.md
+new file mode 100644
+index 0000000..3a937e5
+--- /dev/null
++++ b/SECURITY.md
+@@ -0,0 +1,22 @@
++# Security policy
++
++## Reporting a vulnerability
++
++Please report suspected vulnerabilities privately through GitHub's
++[private vulnerability reporting](https://github.com/code-assurance-initiative/estate-quellbrook-orders/security/advisories/new)
++for this repository. Do not open a public issue.
++
++Include what you found, how to reproduce it, and the impact you expect. We acknowledge reports within three working
++days and aim to publish a fix or a mitigation within 30 days of confirming the issue. We credit reporters in the
++advisory unless they ask us not to.
++
++## Supported versions
++
++Only the latest release is supported.
++
++## Scope
++
++In scope: the order service and the build, release and deployment configuration in this repository. Out of scope:
++the identity provider, the message broker and the platform's shared infrastructure (report those to the platform
++team through the same channel), and denial of service through request volume (the service is reachable only through
++the gateway, which applies rate limits).
+diff --git a/catalog-info.yaml b/catalog-info.yaml
+new file mode 100644
+index 0000000..83a974a
+--- /dev/null
++++ b/catalog-info.yaml
+@@ -0,0 +1,31 @@
++apiVersion: backstage.io/v1alpha1
++kind: Component
++metadata:
++  name: quellbrook-orders
++  description: Order service — places and tracks shippers' orders and publishes order events.
++  annotations:
++    github.com/project-slug: code-assurance-initiative/estate-quellbrook-orders
++  tags: [dotnet, ddd, postgres, rabbitmq]
++spec:
++  type: service
++  lifecycle: production
++  owner: group:orders
++  system: quellbrook-operations
++  providesApis:
++    - quellbrook-orders-api
++  dependsOn:
++    - resource:quellbrook-orders-db
++    - resource:quellbrook-event-broker
++---
++apiVersion: backstage.io/v1alpha1
++kind: API
++metadata:
++  name: quellbrook-orders-api
++  description: HTTP API of the order service, consumed by the gateway.
++spec:
++  type: openapi
++  lifecycle: production
++  owner: group:orders
++  system: quellbrook-operations
++  definition:
++    $text: ./contracts/openapi.yaml
+diff --git a/contracts/openapi.yaml b/contracts/openapi.yaml
+new file mode 100644
+index 0000000..eb1b5a3
+--- /dev/null
++++ b/contracts/openapi.yaml
+@@ -0,0 +1,159 @@
++openapi: 3.1.0
++info:
++  title: Quellbrook Orders API
++  version: 0.1.0
++  description: Order service of the Quellbrook operations platform. Called by the API gateway only.
++servers:
++  - url: http://quellbrook-orders.quellbrook-orders.svc.cluster.local
++security:
++  - bearer: []
++paths:
++  /orders:
++    post:
++      summary: Place an order
++      security:
++        - bearer: [orders:write]
++      parameters:
++        - $ref: '#/components/parameters/Operator'
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              $ref: '#/components/schemas/PlaceOrderRequest'
++      responses:
++        '201':
++          description: Placed; Location names the order.
++        '400':
++          $ref: '#/components/responses/Problem'
++        '422':
++          $ref: '#/components/responses/Problem'
++    get:
++      summary: List orders, newest first
++      security:
++        - bearer: [orders:read]
++      parameters:
++        - name: page
++          in: query
++          schema: { type: integer, minimum: 1, default: 1 }
++        - name: pageSize
++          in: query
++          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
++      responses:
++        '200':
++          description: One page of orders.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/OrderPage'
++  /orders/{id}:
++    get:
++      summary: Read one order
++      security:
++        - bearer: [orders:read]
++      parameters:
++        - name: id
++          in: path
++          required: true
++          schema: { type: string, format: uuid }
++      responses:
++        '200':
++          description: The order.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Order'
++        '404':
++          description: No such order.
++components:
++  securitySchemes:
++    bearer:
++      type: http
++      scheme: bearer
++      bearerFormat: JWT
++  parameters:
++    Operator:
++      name: X-Quellbrook-Operator
++      in: header
++      required: true
++      description: The id of the operator acting, as authenticated by the gateway.
++      schema: { type: string, minLength: 1, maxLength: 64 }
++  responses:
++    Problem:
++      description: RFC 9457 problem details.
++      content:
++        application/problem+json:
++          schema: { type: object }
++  schemas:
++    PlaceOrderRequest:
++      type: object
++      required: [customerAccountId, serviceLevel, consignee, parcels]
++      properties:
++        customerAccountId: { type: string, pattern: '^QB-[0-9]{4,12}$' }
++        serviceLevel: { type: string, enum: [standard, express] }
++        consignee: { $ref: '#/components/schemas/Consignee' }
++        parcels:
++          type: array
++          minItems: 1
++          maxItems: 20
++          items: { $ref: '#/components/schemas/ParcelRequest' }
++    Consignee:
++      type: object
++      required: [name, line1, postalCode, city, countryCode]
++      properties:
++        name: { type: string, maxLength: 100 }
++        line1: { type: string, maxLength: 100 }
++        line2: { type: [string, 'null'], maxLength: 100 }
++        postalCode: { type: string, maxLength: 10 }
++        city: { type: string, maxLength: 60 }
++        countryCode: { type: string, enum: [DK, SE, NO, DE, NL] }
++        email: { type: [string, 'null'], maxLength: 254 }
++        phone: { type: [string, 'null'], maxLength: 20 }
++    ParcelRequest:
++      type: object
++      required: [weightGrams, lengthCm, widthCm, heightCm]
++      properties:
++        weightGrams: { type: integer, minimum: 1, maximum: 31500 }
++        lengthCm: { type: integer, minimum: 1, maximum: 175 }
++        widthCm: { type: integer, minimum: 1, maximum: 175 }
++        heightCm: { type: integer, minimum: 1, maximum: 175 }
++    Order:
++      type: object
++      properties:
++        id: { type: string, format: uuid }
++        customerAccountId: { type: string }
++        serviceLevel: { type: string }
++        status: { type: string, enum: [placed, cancelled] }
++        consignee: { $ref: '#/components/schemas/Consignee' }
++        parcels:
++          type: array
++          items:
++            type: object
++            properties:
++              number: { type: integer }
++              weightGrams: { type: integer }
++              lengthCm: { type: integer }
++              widthCm: { type: integer }
++              heightCm: { type: integer }
++        totalWeightGrams: { type: integer }
++        placedBy: { type: string }
++        placedAt: { type: string, format: date-time }
++    OrderPage:
++      type: object
++      properties:
++        items:
++          type: array
++          items:
++            type: object
++            properties:
++              orderId: { type: string, format: uuid }
++              customerAccountId: { type: string }
++              serviceLevel: { type: string }
++              status: { type: string }
++              consigneeName: { type: string }
++              destinationCity: { type: string }
++              parcelCount: { type: integer }
++              placedAt: { type: string, format: date-time }
++        page: { type: integer }
++        pageSize: { type: integer }
++        totalCount: { type: integer }
+diff --git a/docs/architecture.md b/docs/architecture.md
+new file mode 100644
+index 0000000..b723eb7
+--- /dev/null
++++ b/docs/architecture.md
+@@ -0,0 +1,72 @@
++# Architecture — order service
++
++## Context
++
++The order service is one of five parts of the Quellbrook operations platform. Operators work in the web console;
++the console calls the API gateway; the gateway calls this service with its own client credentials and forwards the
++operator's id. Traffic between services inside the cluster goes through the Linkerd service mesh, which encrypts and
++authenticates it with mutual TLS; the services themselves listen on plain HTTP inside their pods and are reachable
++only from the namespaces their NetworkPolicies allow. Placed orders are announced on the platform's event broker.
++
++```mermaid
++C4Context
++  title System context — Quellbrook operations platform
++  Person(operator, "Operator", "Quellbrook customer service and dispatch staff")
++  Person_Ext(consignee, "Consignee", "Receives the parcels and the notifications")
++  System_Boundary(platform, "Quellbrook operations platform") {
++    System(web, "Operator console", "estate-quellbrook-web")
++    System(gateway, "API gateway / BFF", "estate-quellbrook-gateway")
++    System(orders, "Order service", "this repository")
++    System(dispatch, "Dispatch service", "estate-quellbrook-dispatch")
++    System(notifier, "Notifier", "estate-quellbrook-notifier")
++  }
++  System_Ext(idp, "Identity provider", "OpenID Connect")
++  Rel(operator, web, "Uses", "HTTPS")
++  Rel(web, gateway, "Calls /api", "HTTPS/JSON")
++  Rel(gateway, orders, "Places and reads orders", "HTTP/JSON, mesh mTLS")
++  Rel(gateway, dispatch, "Plans routes", "HTTP/JSON, mesh mTLS")
++  Rel(orders, dispatch, "orders.* events", "RabbitMQ")
++  Rel(orders, notifier, "orders.* events", "RabbitMQ")
++  Rel(notifier, consignee, "E-mail and SMS")
++  Rel(gateway, idp, "Verifies operators, obtains service tokens", "HTTPS")
++```
++
++## Containers
++
++```mermaid
++C4Container
++  title Containers — order service
++  System_Ext(gateway, "API gateway / BFF", "estate-quellbrook-gateway")
++  Container_Boundary(service, "Order service") {
++    Container(api, "Orders API", "ASP.NET Core, .NET 10", "Places, reads and lists orders; publishes order events")
++    ContainerDb(db, "Orders database", "PostgreSQL 16", "orders")
++  }
++  ContainerQueue(broker, "Event broker", "RabbitMQ", "topic exchange quellbrook.events")
++  System_Ext(idp, "Identity provider", "OpenID Connect")
++  Rel(gateway, api, "Calls", "HTTP/JSON over mesh mTLS, bearer token with orders:read / orders:write")
++  Rel(api, db, "Reads and writes", "EF Core / Npgsql")
++  Rel(api, broker, "Publishes orders.order-placed.v1", "AMQPS")
++  Rel(api, idp, "Fetches token signing keys", "HTTPS")
++```
++
++## Inside the service
++
++| Project | Responsibility | Depends on |
++|---|---|---|
++| `Quellbrook.Orders.Domain` | the Order aggregate, its value objects and domain events | nothing |
++| `Quellbrook.Orders.Contracts` | the published integration-event contracts (`OrderPlacedV1`) | nothing |
++| `Quellbrook.Orders.Application` | command handlers, queries, the contract mapping | Domain, Contracts |
++| `Quellbrook.Orders.Infrastructure` | EF Core persistence and migrations, the RabbitMQ publisher | Application |
++| `Quellbrook.Orders.Api` | minimal-API endpoints, authentication and authorization, hosting | Infrastructure |
++
++The aggregate knows nothing about storage: `EfOrderRepository` maps it to an `orders` row (consignee and parcels as
++JSON documents, the list's filter and sort fields as columns).
++
++## Message contracts
++
++| Routing key | Payload | Consumers |
++|---|---|---|
++| `orders.order-placed.v1` | `OrderPlacedV1`: order id, customer account, service level, consignee (name, address, optional e-mail and phone), parcels | dispatch, notifier |
++
++Messages are JSON, persistent, with the AMQP `message-id` set; consumers de-duplicate on it. A v1 contract only gains
++optional fields; a breaking change is a new routing key (`.v2`) published alongside v1 until every consumer moved.

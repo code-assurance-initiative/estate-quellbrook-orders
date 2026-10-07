@@ -1,0 +1,222 @@
+From 40415186823704d4575c3038a506dace862ea800 Mon Sep 17 00:00:00 2001
+From: Odile Marchetti <odile.marchetti@example.invalid>
+Date: Fri, 28 Aug 2026 11:15:39 +0200
+Subject: docs: JSON Schemas and AsyncAPI document for the order events
+
+---
+ catalog-info.yaml                             | 14 +++++
+ contracts/asyncapi.yaml                       | 42 ++++++++++++++
+ .../events/order-cancelled.v1.schema.json     | 13 +++++
+ contracts/events/order-placed.v1.schema.json  | 56 +++++++++++++++++++
+ contracts/openapi.yaml                        |  9 ++-
+ docs/architecture.md                          |  5 +-
+ 6 files changed, 134 insertions(+), 5 deletions(-)
+ create mode 100644 contracts/asyncapi.yaml
+ create mode 100644 contracts/events/order-cancelled.v1.schema.json
+ create mode 100644 contracts/events/order-placed.v1.schema.json
+
+diff --git a/catalog-info.yaml b/catalog-info.yaml
+index 83a974a..bf0cea0 100644
+--- a/catalog-info.yaml
++++ b/catalog-info.yaml
+@@ -13,6 +13,7 @@ spec:
+   system: quellbrook-operations
+   providesApis:
+     - quellbrook-orders-api
++    - quellbrook-orders-events
+   dependsOn:
+     - resource:quellbrook-orders-db
+     - resource:quellbrook-event-broker
+@@ -29,3 +30,16 @@ spec:
+   system: quellbrook-operations
+   definition:
+     $text: ./contracts/openapi.yaml
++---
++apiVersion: backstage.io/v1alpha1
++kind: API
++metadata:
++  name: quellbrook-orders-events
++  description: Order events (orders.order-placed.v1, orders.order-cancelled.v1), consumed by dispatch and the notifier.
++spec:
++  type: asyncapi
++  lifecycle: production
++  owner: group:orders
++  system: quellbrook-operations
++  definition:
++    $text: ./contracts/asyncapi.yaml
+diff --git a/contracts/asyncapi.yaml b/contracts/asyncapi.yaml
+new file mode 100644
+index 0000000..e0aecc5
+--- /dev/null
++++ b/contracts/asyncapi.yaml
+@@ -0,0 +1,42 @@
++asyncapi: 3.0.0
++info:
++  title: Quellbrook order events
++  version: 1.0.0
++  description: Events published by the order service on the platform's RabbitMQ topic exchange.
++servers:
++  production:
++    host: rabbitmq.messaging.svc.cluster.local:5671
++    protocol: amqps
++    pathname: /quellbrook
++channels:
++  orderPlaced:
++    address: orders.order-placed.v1
++    messages:
++      orderPlaced:
++        $ref: '#/components/messages/orderPlaced'
++  orderCancelled:
++    address: orders.order-cancelled.v1
++    messages:
++      orderCancelled:
++        $ref: '#/components/messages/orderCancelled'
++operations:
++  publishOrderPlaced:
++    action: send
++    channel:
++      $ref: '#/channels/orderPlaced'
++  publishOrderCancelled:
++    action: send
++    channel:
++      $ref: '#/channels/orderCancelled'
++components:
++  messages:
++    orderPlaced:
++      contentType: application/json
++      correlationId:
++        location: $message.header#/message_id
++      payload:
++        $ref: './events/order-placed.v1.schema.json'
++    orderCancelled:
++      contentType: application/json
++      payload:
++        $ref: './events/order-cancelled.v1.schema.json'
+diff --git a/contracts/events/order-cancelled.v1.schema.json b/contracts/events/order-cancelled.v1.schema.json
+new file mode 100644
+index 0000000..4348cf1
+--- /dev/null
++++ b/contracts/events/order-cancelled.v1.schema.json
+@@ -0,0 +1,13 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "https://quellbrook.example/contracts/orders/order-cancelled.v1.schema.json",
++  "title": "orders.order-cancelled.v1",
++  "description": "Published by the order service when an order is cancelled. Owned by the Orders team.",
++  "type": "object",
++  "required": ["orderId", "reason", "cancelledAt"],
++  "properties": {
++    "orderId": { "type": "string", "format": "uuid" },
++    "reason": { "type": "string", "maxLength": 200 },
++    "cancelledAt": { "type": "string", "format": "date-time" }
++  }
++}
+diff --git a/contracts/events/order-placed.v1.schema.json b/contracts/events/order-placed.v1.schema.json
+new file mode 100644
+index 0000000..54e1117
+--- /dev/null
++++ b/contracts/events/order-placed.v1.schema.json
+@@ -0,0 +1,56 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "https://quellbrook.example/contracts/orders/order-placed.v1.schema.json",
++  "title": "orders.order-placed.v1",
++  "description": "Published by the order service when an order is placed. Owned by the Orders team. Within v1 fields are only added, never renamed or removed; consumers ignore fields they do not know.",
++  "type": "object",
++  "required": ["orderId", "customerAccountId", "serviceLevel", "consignee", "parcels", "placedAt"],
++  "properties": {
++    "orderId": { "type": "string", "format": "uuid" },
++    "customerAccountId": { "type": "string", "pattern": "^QB-[0-9]{4,12}$" },
++    "serviceLevel": { "enum": ["standard", "express"] },
++    "consignee": {
++      "type": "object",
++      "required": ["name", "address", "contact"],
++      "properties": {
++        "name": { "type": "string", "maxLength": 100 },
++        "address": {
++          "type": "object",
++          "required": ["line1", "postalCode", "city", "countryCode"],
++          "properties": {
++            "line1": { "type": "string", "maxLength": 100 },
++            "line2": { "type": ["string", "null"], "maxLength": 100 },
++            "postalCode": { "type": "string", "maxLength": 10 },
++            "city": { "type": "string", "maxLength": 60 },
++            "countryCode": { "enum": ["DK", "SE", "NO", "DE", "NL"] }
++          }
++        },
++        "contact": {
++          "type": "object",
++          "description": "Personal data: used only to notify the consignee about this delivery (docs/privacy.md).",
++          "properties": {
++            "email": { "type": ["string", "null"], "format": "email" },
++            "phone": { "type": ["string", "null"], "pattern": "^\\+[1-9][0-9]{7,14}$" }
++          }
++        }
++      }
++    },
++    "parcels": {
++      "type": "array",
++      "minItems": 1,
++      "maxItems": 20,
++      "items": {
++        "type": "object",
++        "required": ["number", "weightGrams", "lengthCm", "widthCm", "heightCm"],
++        "properties": {
++          "number": { "type": "integer", "minimum": 1 },
++          "weightGrams": { "type": "integer", "minimum": 1, "maximum": 31500 },
++          "lengthCm": { "type": "integer", "minimum": 1, "maximum": 175 },
++          "widthCm": { "type": "integer", "minimum": 1, "maximum": 175 },
++          "heightCm": { "type": "integer", "minimum": 1, "maximum": 175 }
++        }
++      }
++    },
++    "placedAt": { "type": "string", "format": "date-time" }
++  }
++}
+diff --git a/contracts/openapi.yaml b/contracts/openapi.yaml
+index e72a405..b964e3a 100644
+--- a/contracts/openapi.yaml
++++ b/contracts/openapi.yaml
+@@ -1,7 +1,7 @@
+ openapi: 3.1.0
+ info:
+   title: Quellbrook Orders API
+-  version: 0.2.0
++  version: 0.3.0
+   description: Order service of the Quellbrook operations platform. Called by the API gateway only.
+ servers:
+   - url: http://quellbrook-orders.quellbrook-orders.svc.cluster.local
+@@ -39,6 +39,9 @@ paths:
+         - name: pageSize
+           in: query
+           schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
++        - name: status
++          in: query
++          schema: { type: string, enum: [placed, cancelled] }
+       responses:
+         '200':
+           description: One page of orders.
+@@ -136,8 +139,8 @@ components:
+         postalCode: { type: string, maxLength: 10 }
+         city: { type: string, maxLength: 60 }
+         countryCode: { type: string, enum: [DK, SE, NO, DE, NL] }
+-        email: { type: [string, 'null'], maxLength: 254 }
+-        phone: { type: [string, 'null'], maxLength: 20 }
++        email: { type: [string, 'null'], format: email, maxLength: 254 }
++        phone: { type: [string, 'null'], maxLength: 20, description: 'International form, e.g. +45 20 30 40 50' }
+     ParcelRequest:
+       type: object
+       required: [weightGrams, lengthCm, widthCm, heightCm]
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 856e6f2..f15778e 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -88,5 +88,6 @@ sequenceDiagram
+ | `orders.order-placed.v1` | `OrderPlacedV1`: order id, customer account, service level, consignee (name, address, optional e-mail and phone), parcels | dispatch, notifier |
+ | `orders.order-cancelled.v1` | `OrderCancelledV1`: order id, reason, time | dispatch |
+ 
+-Messages are JSON, persistent, with the AMQP `message-id` set; consumers de-duplicate on it. A v1 contract only gains
+-optional fields; a breaking change is a new routing key (`.v2`) published alongside v1 until every consumer moved.
++Messages are JSON, persistent, with the AMQP `message-id` set; consumers de-duplicate on it. The schemas are in
++`contracts/events/` and `contracts/asyncapi.yaml`; they evolve by ADR 0004 (optional additions within a version, a new
++routing key for a breaking change). Dispatched outbox rows are deleted after seven days.

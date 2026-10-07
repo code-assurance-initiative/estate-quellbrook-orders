@@ -1,0 +1,34 @@
+From 6a10da23fff3a3f9c5b98bde08eff7b5dda912b2 Mon Sep 17 00:00:00 2001
+From: Pavel Strand <pavel.strand@example.invalid>
+Date: Tue, 1 Sep 2026 14:20:33 +0200
+Subject: refactor(domain): DomainException with the one constructor it needs
+
+---
+ .../Common/DomainException.cs                   | 17 +----------------
+ 1 file changed, 1 insertion(+), 16 deletions(-)
+
+diff --git a/src/Quellbrook.Orders.Domain/Common/DomainException.cs b/src/Quellbrook.Orders.Domain/Common/DomainException.cs
+index a8fb3a9..4cc0c1a 100644
+--- a/src/Quellbrook.Orders.Domain/Common/DomainException.cs
++++ b/src/Quellbrook.Orders.Domain/Common/DomainException.cs
+@@ -1,19 +1,4 @@
+ namespace Quellbrook.Orders.Domain.Common;
+ 
+ /// <summary>A business rule was broken; the message is safe to show to the caller.</summary>
+-public sealed class DomainException : Exception
+-{
+-    public DomainException()
+-    {
+-    }
+-
+-    public DomainException(string message)
+-        : base(message)
+-    {
+-    }
+-
+-    public DomainException(string message, Exception innerException)
+-        : base(message, innerException)
+-    {
+-    }
+-}
++public sealed class DomainException(string message) : Exception(message);

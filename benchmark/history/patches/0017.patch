@@ -1,0 +1,123 @@
+From 07ba7f44df677c8f21628b38536af83ed4e4a470 Mon Sep 17 00:00:00 2001
+From: Ruth Calloway <ruth.calloway@example.invalid>
+Date: Mon, 24 Aug 2026 13:44:18 +0200
+Subject: feat(outbox): delete dispatched messages after seven days
+
+---
+ .../Outbox/OutboxOptions.cs                   | 11 +++++++
+ .../Outbox/OutboxRelay.cs                     | 30 ++++++++++++++++++-
+ .../Infrastructure/OutboxRelayTests.cs        | 18 +++++++++++
+ 3 files changed, 58 insertions(+), 1 deletion(-)
+
+diff --git a/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxOptions.cs b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxOptions.cs
+index 527620a..7e856a7 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxOptions.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxOptions.cs
+@@ -12,4 +12,15 @@ public sealed class OutboxOptions
+ 
+     [Range(1, 500)]
+     public int BatchSize { get; set; } = 50;
++
++    /// <summary>
++    /// How long a dispatched message is kept for replay and investigation before it is deleted. The payloads carry
++    /// consignee contact details (docs/privacy.md), so this is also their retention in the outbox.
++    /// </summary>
++    [Range(typeof(TimeSpan), "1.00:00:00", "30.00:00:00")]
++    public TimeSpan Retention { get; set; } = TimeSpan.FromDays(7);
++
++    /// <summary>How often expired messages are deleted.</summary>
++    [Range(typeof(TimeSpan), "00:01:00", "1.00:00:00")]
++    public TimeSpan PurgeInterval { get; set; } = TimeSpan.FromHours(1);
+ }
+diff --git a/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxRelay.cs b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxRelay.cs
+index e565d1a..ef6f16d 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxRelay.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxRelay.cs
+@@ -10,7 +10,8 @@ namespace Quellbrook.Orders.Infrastructure.Outbox;
+ 
+ /// <summary>
+ /// Publishes stored messages in the order they occurred and marks each one dispatched (ADR 0003). A failure stops the
+-/// batch so that order is kept; the message is retried on the next poll.
++/// batch so that order is kept; the message is retried on the next poll. Dispatched messages are deleted after the
++/// retention period.
+ /// </summary>
+ public sealed partial class OutboxRelay(
+     IServiceScopeFactory scopes,
+@@ -55,14 +56,38 @@ public sealed partial class OutboxRelay(
+         return dispatched;
+     }
+ 
++    /// <summary>Deletes dispatched messages older than the retention period; returns how many.</summary>
++    public async Task<int> PurgeExpiredAsync(CancellationToken cancellationToken)
++    {
++        using var scope = scopes.CreateScope();
++        var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
++        var cutoff = time.GetUtcNow() - options.Value.Retention;
++        var purged = await db.OutboxMessages
++            .Where(message => message.DispatchedAt != null && message.DispatchedAt < cutoff)
++            .ExecuteDeleteAsync(cancellationToken)
++            .ConfigureAwait(false);
++        if (purged > 0)
++        {
++            LogPurged(purged, cutoff);
++        }
++
++        return purged;
++    }
++
+     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+     {
+         using var timer = new PeriodicTimer(options.Value.PollInterval, time);
++        var nextPurge = time.GetUtcNow();
+         while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
+         {
+             try
+             {
+                 await DispatchPendingAsync(stoppingToken).ConfigureAwait(false);
++                if (time.GetUtcNow() >= nextPurge)
++                {
++                    await PurgeExpiredAsync(stoppingToken).ConfigureAwait(false);
++                    nextPurge = time.GetUtcNow() + options.Value.PurgeInterval;
++                }
+             }
+             catch (DbUpdateException exception)
+             {
+@@ -74,6 +99,9 @@ public sealed partial class OutboxRelay(
+     [LoggerMessage(Level = LogLevel.Warning, Message = "Publishing outbox message {MessageId} ({EventType}) failed, attempt {Attempts}; retrying on the next poll")]
+     private partial void LogPublishFailed(Exception exception, Guid messageId, string eventType, int attempts);
+ 
++    [LoggerMessage(Level = LogLevel.Information, Message = "Deleted {Count} outbox messages dispatched before {Cutoff}")]
++    private partial void LogPurged(int count, DateTimeOffset cutoff);
++
+     [LoggerMessage(Level = LogLevel.Error, Message = "The outbox could not be updated; retrying on the next poll")]
+     private partial void LogStoreFailed(Exception exception);
+ }
+diff --git a/tests/Quellbrook.Orders.UnitTests/Infrastructure/OutboxRelayTests.cs b/tests/Quellbrook.Orders.UnitTests/Infrastructure/OutboxRelayTests.cs
+index d0128cd..de31d01 100644
+--- a/tests/Quellbrook.Orders.UnitTests/Infrastructure/OutboxRelayTests.cs
++++ b/tests/Quellbrook.Orders.UnitTests/Infrastructure/OutboxRelayTests.cs
+@@ -75,6 +75,24 @@ public sealed class OutboxRelayTests : IDisposable
+         Assert.Equal(2, dispatched);
+     }
+ 
++    [Fact]
++    public async Task DispatchedMessagesOlderThanTheRetentionAreDeletedAndPendingOnesKept()
++    {
++        await StoreAsync(("orders.order-placed.v1", 1), ("orders.order-placed.v1", 2));
++        await Relay(batchSize: 1).DispatchPendingAsync(TestContext.Current.CancellationToken);
++
++        _time.Advance(TimeSpan.FromDays(6));
++        var early = await Relay().PurgeExpiredAsync(TestContext.Current.CancellationToken);
++        _time.Advance(TimeSpan.FromDays(2));
++        var due = await Relay().PurgeExpiredAsync(TestContext.Current.CancellationToken);
++
++        Assert.Equal(0, early);
++        Assert.Equal(1, due);
++        using var context = _db.CreateContext();
++        var left = Assert.Single(context.OutboxMessages);
++        Assert.Null(left.DispatchedAt);
++    }
++
+     private async Task StoreAsync(params (string Type, int Minute)[] messages)
+     {
+         using var context = _db.CreateContext();

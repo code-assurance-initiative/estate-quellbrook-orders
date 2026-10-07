@@ -1,0 +1,342 @@
+From 9c642c386c243cd03b101e3e8c9cbd3973ef7770 Mon Sep 17 00:00:00 2001
+From: Odile Marchetti <odile.marchetti@example.invalid>
+Date: Mon, 17 Aug 2026 15:46:21 +0200
+Subject: feat: cancel orders through the API and announce
+ orders.order-cancelled.v1
+
+---
+ .../Contracts/CancelOrderRequest.cs           | 18 +++++
+ .../Contracts/OrderResponse.cs                | 10 ++-
+ .../Endpoints/OrderEndpoints.cs               | 26 +++++++
+ .../ApplicationServiceCollectionExtensions.cs |  2 +
+ .../CancelOrder/CancelOrderCommand.cs         |  3 +
+ .../CancelOrder/CancelOrderHandler.cs         | 39 +++++++++++
+ .../IntegrationEvents/OrderCancelledV1.cs     | 10 +++
+ .../OrdersApiTests.cs                         | 32 ++++++++-
+ .../Application/CancelOrderHandlerTests.cs    | 68 +++++++++++++++++++
+ 9 files changed, 204 insertions(+), 4 deletions(-)
+ create mode 100644 src/Quellbrook.Orders.Api/Contracts/CancelOrderRequest.cs
+ create mode 100644 src/Quellbrook.Orders.Application/CancelOrder/CancelOrderCommand.cs
+ create mode 100644 src/Quellbrook.Orders.Application/CancelOrder/CancelOrderHandler.cs
+ create mode 100644 src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderCancelledV1.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/Application/CancelOrderHandlerTests.cs
+
+diff --git a/src/Quellbrook.Orders.Api/Contracts/CancelOrderRequest.cs b/src/Quellbrook.Orders.Api/Contracts/CancelOrderRequest.cs
+new file mode 100644
+index 0000000..c56cf6d
+--- /dev/null
++++ b/src/Quellbrook.Orders.Api/Contracts/CancelOrderRequest.cs
+@@ -0,0 +1,18 @@
++namespace Quellbrook.Orders.Api.Contracts;
++
++public sealed record CancelOrderRequest(string? Reason)
++{
++    public const int MaxReasonLength = 200;
++
++    public Dictionary<string, string[]> Validate()
++    {
++        var errors = new RequestErrors();
++        errors.Required(Reason, "reason");
++        if (Reason is { Length: > MaxReasonLength })
++        {
++            errors.Add("reason", $"must be at most {MaxReasonLength} characters");
++        }
++
++        return errors.ToDictionary();
++    }
++}
+diff --git a/src/Quellbrook.Orders.Api/Contracts/OrderResponse.cs b/src/Quellbrook.Orders.Api/Contracts/OrderResponse.cs
+index 4790cf4..66556f2 100644
+--- a/src/Quellbrook.Orders.Api/Contracts/OrderResponse.cs
++++ b/src/Quellbrook.Orders.Api/Contracts/OrderResponse.cs
+@@ -12,7 +12,8 @@ public sealed record OrderResponse(
+     IReadOnlyList<ParcelResponse> Parcels,
+     int TotalWeightGrams,
+     string PlacedBy,
+-    DateTimeOffset PlacedAt)
++    DateTimeOffset PlacedAt,
++    CancellationResponse? Cancellation)
+ {
+     public static OrderResponse From(Order order)
+     {
+@@ -41,7 +42,10 @@ public sealed record OrderResponse(
+                 parcel.Dimensions.HeightCm))],
+             order.TotalWeightGrams,
+             order.PlacedBy,
+-            order.PlacedAt);
++            order.PlacedAt,
++            order.CancelledAt is { } cancelledAt
++                ? new CancellationResponse(order.CancelledBy ?? string.Empty, cancelledAt, order.CancellationReason ?? string.Empty)
++                : null);
+     }
+ }
+ 
+@@ -56,3 +60,5 @@ public sealed record ConsigneeResponse(
+     string? Phone);
+ 
+ public sealed record ParcelResponse(int Number, int WeightGrams, int LengthCm, int WidthCm, int HeightCm);
++
++public sealed record CancellationResponse(string By, DateTimeOffset At, string Reason);
+diff --git a/src/Quellbrook.Orders.Api/Endpoints/OrderEndpoints.cs b/src/Quellbrook.Orders.Api/Endpoints/OrderEndpoints.cs
+index b4b7e33..c305a92 100644
+--- a/src/Quellbrook.Orders.Api/Endpoints/OrderEndpoints.cs
++++ b/src/Quellbrook.Orders.Api/Endpoints/OrderEndpoints.cs
+@@ -1,6 +1,7 @@
+ using Quellbrook.Orders.Api.Contracts;
+ using Quellbrook.Orders.Api.Security;
+ using Quellbrook.Orders.Application;
++using Quellbrook.Orders.Application.CancelOrder;
+ using Quellbrook.Orders.Application.PlaceOrder;
+ using Quellbrook.Orders.Application.Queries;
+ using Quellbrook.Orders.Domain.Orders;
+@@ -17,6 +18,7 @@ public static class OrderEndpoints
+         orders.MapPost("/", PlaceAsync).RequireAuthorization(AuthorizationPolicies.WriteOrders);
+         orders.MapGet("/", ListAsync).RequireAuthorization(AuthorizationPolicies.ReadOrders);
+         orders.MapGet("/{id:guid}", GetAsync).RequireAuthorization(AuthorizationPolicies.ReadOrders);
++        orders.MapPost("/{id:guid}/cancellation", CancelAsync).RequireAuthorization(AuthorizationPolicies.WriteOrders);
+         return app;
+     }
+ 
+@@ -44,6 +46,30 @@ public static class OrderEndpoints
+             : EndpointResults.Problem(result);
+     }
+ 
++    private static async Task<IResult> CancelAsync(
++        Guid id,
++        CancelOrderRequest request,
++        HttpRequest http,
++        CancelOrderHandler handler,
++        CancellationToken cancellationToken)
++    {
++        var operatorId = OperatorHeader.From(http);
++        if (operatorId is null)
++        {
++            return EndpointResults.MissingOperator();
++        }
++
++        var errors = request.Validate();
++        if (errors.Count > 0)
++        {
++            return Results.ValidationProblem(errors);
++        }
++
++        var result = await handler.HandleAsync(new CancelOrderCommand(id, request.Reason ?? string.Empty, operatorId), cancellationToken)
++            .ConfigureAwait(false);
++        return result.Status == OperationStatus.Succeeded ? Results.NoContent() : EndpointResults.Problem(result);
++    }
++
+     private static async Task<IResult> GetAsync(Guid id, IOrderRepository orders, CancellationToken cancellationToken)
+     {
+         var order = await orders.FindAsync(new OrderId(id), cancellationToken).ConfigureAwait(false);
+diff --git a/src/Quellbrook.Orders.Application/ApplicationServiceCollectionExtensions.cs b/src/Quellbrook.Orders.Application/ApplicationServiceCollectionExtensions.cs
+index afd1665..c59aedc 100644
+--- a/src/Quellbrook.Orders.Application/ApplicationServiceCollectionExtensions.cs
++++ b/src/Quellbrook.Orders.Application/ApplicationServiceCollectionExtensions.cs
+@@ -1,4 +1,5 @@
+ using Microsoft.Extensions.DependencyInjection;
++using Quellbrook.Orders.Application.CancelOrder;
+ using Quellbrook.Orders.Application.PlaceOrder;
+ 
+ namespace Quellbrook.Orders.Application;
+@@ -8,6 +9,7 @@ public static class ApplicationServiceCollectionExtensions
+     public static IServiceCollection AddOrdersApplication(this IServiceCollection services)
+     {
+         services.AddScoped<PlaceOrderHandler>();
++        services.AddScoped<CancelOrderHandler>();
+         return services;
+     }
+ }
+diff --git a/src/Quellbrook.Orders.Application/CancelOrder/CancelOrderCommand.cs b/src/Quellbrook.Orders.Application/CancelOrder/CancelOrderCommand.cs
+new file mode 100644
+index 0000000..2db63bb
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/CancelOrder/CancelOrderCommand.cs
+@@ -0,0 +1,3 @@
++namespace Quellbrook.Orders.Application.CancelOrder;
++
++public sealed record CancelOrderCommand(Guid OrderId, string Reason, string Operator);
+diff --git a/src/Quellbrook.Orders.Application/CancelOrder/CancelOrderHandler.cs b/src/Quellbrook.Orders.Application/CancelOrder/CancelOrderHandler.cs
+new file mode 100644
+index 0000000..8dc4c42
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/CancelOrder/CancelOrderHandler.cs
+@@ -0,0 +1,39 @@
++using Microsoft.Extensions.Logging;
++using Quellbrook.Orders.Domain.Common;
++using Quellbrook.Orders.Domain.Orders;
++
++namespace Quellbrook.Orders.Application.CancelOrder;
++
++public sealed partial class CancelOrderHandler(IOrderRepository orders, TimeProvider time, ILogger<CancelOrderHandler> logger)
++{
++    public async Task<OperationResult<OrderId>> HandleAsync(CancelOrderCommand command, CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(command);
++        var order = await orders.FindAsync(new OrderId(command.OrderId), cancellationToken).ConfigureAwait(false);
++        if (order is null)
++        {
++            return OperationResult.NotFound<OrderId>($"Order {command.OrderId} does not exist.");
++        }
++
++        if (order.Status == OrderStatus.Cancelled)
++        {
++            return OperationResult.Conflict<OrderId>($"Order {order.Id} is already cancelled.");
++        }
++
++        try
++        {
++            order.Cancel(command.Reason, command.Operator, time.GetUtcNow());
++        }
++        catch (DomainException exception)
++        {
++            return OperationResult.Invalid<OrderId>(exception.Message);
++        }
++
++        await orders.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
++        LogOrderCancelled(order.Id.Value);
++        return OperationResult.Succeeded(order.Id);
++    }
++
++    [LoggerMessage(Level = LogLevel.Information, Message = "Order {OrderId} cancelled")]
++    private partial void LogOrderCancelled(Guid orderId);
++}
+diff --git a/src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderCancelledV1.cs b/src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderCancelledV1.cs
+new file mode 100644
+index 0000000..01eb0e3
+--- /dev/null
++++ b/src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderCancelledV1.cs
+@@ -0,0 +1,10 @@
++namespace Quellbrook.Orders.Contracts.IntegrationEvents;
++
++/// <summary>
++/// Published when an order is cancelled (routing key <c>orders.order-cancelled.v1</c>). Schema:
++/// contracts/events/order-cancelled.v1.schema.json.
++/// </summary>
++public sealed record OrderCancelledV1(Guid OrderId, string Reason, DateTimeOffset CancelledAt)
++{
++    public const string EventType = "orders.order-cancelled.v1";
++}
+diff --git a/tests/Quellbrook.Orders.IntegrationTests/OrdersApiTests.cs b/tests/Quellbrook.Orders.IntegrationTests/OrdersApiTests.cs
+index 7383d2c..9d1cb79 100644
+--- a/tests/Quellbrook.Orders.IntegrationTests/OrdersApiTests.cs
++++ b/tests/Quellbrook.Orders.IntegrationTests/OrdersApiTests.cs
+@@ -35,8 +35,8 @@ public sealed class OrdersApiTests(OrdersApiFactory factory) : IClassFixture<Ord
+         Assert.Equal("placed", order.Status);
+         Assert.Equal("operator-17", order.PlacedBy);
+         Assert.Equal(2400, order.TotalWeightGrams);
+-        Assert.Contains(factory.Publisher.Published, message =>
+-            message.EventType == OrderPlacedV1.EventType && ((OrderPlacedV1)message.Payload).OrderId == order.Id);
++        Assert.Contains(factory.Outbox(), message =>
++            message.Type == OrderPlacedV1.EventType && message.Payload.Contains(order.Id.ToString(), StringComparison.Ordinal));
+     }
+ 
+     [Fact]
+@@ -94,6 +94,34 @@ public sealed class OrdersApiTests(OrdersApiFactory factory) : IClassFixture<Ord
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task AnOrderCanBeCancelledOnceWithAReason()
++    {
++        var client = factory.CreateClient("operator-4", "orders:read", "orders:write");
++        var created = await client.PostAsJsonAsync("/orders", NewOrder(), TestContext.Current.CancellationToken);
++
++        var cancelled = await client.PostAsJsonAsync($"{created.Headers.Location}/cancellation", new { reason = "Shipper withdrew the order" }, TestContext.Current.CancellationToken);
++        var again = await client.PostAsJsonAsync($"{created.Headers.Location}/cancellation", new { reason = "again" }, TestContext.Current.CancellationToken);
++
++        Assert.Equal(HttpStatusCode.NoContent, cancelled.StatusCode);
++        Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
++        var order = await client.GetFromJsonAsync<OrderDto>(created.Headers.Location, TestContext.Current.CancellationToken);
++        Assert.NotNull(order);
++        Assert.Equal("cancelled", order.Status);
++        Assert.Contains(factory.Outbox(), message =>
++            message.Type == OrderCancelledV1.EventType && message.Payload.Contains(order.Id.ToString(), StringComparison.Ordinal));
++    }
++
++    [Fact]
++    public async Task CancellingNeedsAReason()
++    {
++        var client = factory.CreateClient("operator-4", "orders:write");
++
++        var response = await client.PostAsJsonAsync($"/orders/{Guid.NewGuid()}/cancellation", new { reason = "" }, TestContext.Current.CancellationToken);
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++    }
++
+     [Fact]
+     public async Task AnUnknownOrderIsNotFound()
+     {
+diff --git a/tests/Quellbrook.Orders.UnitTests/Application/CancelOrderHandlerTests.cs b/tests/Quellbrook.Orders.UnitTests/Application/CancelOrderHandlerTests.cs
+new file mode 100644
+index 0000000..933efeb
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/Application/CancelOrderHandlerTests.cs
+@@ -0,0 +1,68 @@
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Time.Testing;
++using Quellbrook.Orders.Application;
++using Quellbrook.Orders.Application.CancelOrder;
++using Quellbrook.Orders.Contracts.IntegrationEvents;
++using Quellbrook.Orders.Domain.Orders;
++using Quellbrook.Orders.UnitTests.TestSupport;
++
++namespace Quellbrook.Orders.UnitTests.Application;
++
++public sealed class CancelOrderHandlerTests
++{
++    private readonly InMemoryOrderRepository _orders = new();
++    private readonly FakeTimeProvider _time = new(OrderData.PlacedAt.AddHours(1));
++
++    private CancelOrderHandler Handler() => new(_orders, _time, NullLogger<CancelOrderHandler>.Instance);
++
++    [Fact]
++    public async Task APlacedOrderIsCancelledAndAnnounced()
++    {
++        var order = OrderData.Placed();
++        order.ClearDomainEvents();
++        _orders.Add(order);
++
++        var result = await Handler().HandleAsync(new CancelOrderCommand(order.Id.Value, "Shipper withdrew the order", "operator-4"), TestContext.Current.CancellationToken);
++
++        Assert.Equal(OperationStatus.Succeeded, result.Status);
++        Assert.Equal(OrderStatus.Cancelled, order.Status);
++        Assert.Equal("operator-4", order.CancelledBy);
++        var message = Assert.Single(OrderContractMapper.ToIntegrationMessages(order));
++        var cancelled = Assert.IsType<OrderCancelledV1>(message.Payload);
++        Assert.Equal("Shipper withdrew the order", cancelled.Reason);
++        Assert.Equal(_time.GetUtcNow(), cancelled.CancelledAt);
++    }
++
++    [Fact]
++    public async Task AnUnknownOrderIsNotFound()
++    {
++        var result = await Handler().HandleAsync(new CancelOrderCommand(Guid.NewGuid(), "reason", "operator-4"), TestContext.Current.CancellationToken);
++
++        Assert.Equal(OperationStatus.NotFound, result.Status);
++    }
++
++    [Fact]
++    public async Task CancellingTwiceIsAConflict()
++    {
++        var order = OrderData.Placed();
++        order.Cancel("first", "operator-4", OrderData.PlacedAt);
++        _orders.Add(order);
++
++        var result = await Handler().HandleAsync(new CancelOrderCommand(order.Id.Value, "again", "operator-4"), TestContext.Current.CancellationToken);
++
++        Assert.Equal(OperationStatus.Conflict, result.Status);
++        Assert.Equal(0, _orders.Saves);
++    }
++
++    [Fact]
++    public async Task ABlankReasonIsInvalid()
++    {
++        var order = OrderData.Placed();
++        _orders.Add(order);
++
++        var result = await Handler().HandleAsync(new CancelOrderCommand(order.Id.Value, " ", "operator-4"), TestContext.Current.CancellationToken);
++
++        Assert.Equal(OperationStatus.Invalid, result.Status);
++        Assert.Equal(OrderStatus.Placed, order.Status);
++    }
++}

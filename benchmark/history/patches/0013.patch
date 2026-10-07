@@ -1,0 +1,1098 @@
+From 8eb208315f9128c7456ba513dafe3258d52bfaee Mon Sep 17 00:00:00 2001
+From: Ruth Calloway <ruth.calloway@example.invalid>
+Date: Thu, 13 Aug 2026 11:20:15 +0200
+Subject: refactor: publish order events through a transactional outbox (ADR
+ 0003)
+
+---
+ .../IIntegrationEventPublisher.cs             |   8 --
+ .../IntegrationMessage.cs                     |   4 +
+ .../OrderContractMapper.cs                    |  18 +++
+ .../PlaceOrder/PlaceOrderHandler.cs           |   8 --
+ ...frastructureServiceCollectionExtensions.cs |   9 +-
+ .../Messaging/RabbitMqPublisher.cs            |  16 +--
+ .../Outbox/IOutboxPublisher.cs                |   7 +
+ .../Outbox/OutboxMessage.cs                   |  17 +++
+ .../Outbox/OutboxMessageConfiguration.cs      |  16 +++
+ .../Outbox/OutboxOptions.cs                   |  15 ++
+ .../Outbox/OutboxRelay.cs                     |  79 +++++++++++
+ .../Persistence/EfOrderRepository.cs          |  23 ++-
+ ...94500_AddOutboxAndCancellation.Designer.cs | 133 ++++++++++++++++++
+ ...20260813094500_AddOutboxAndCancellation.cs |  75 ++++++++++
+ .../OrdersDbContextModelSnapshot.cs           |  42 ++++++
+ .../Persistence/OrderDocuments.cs             |   8 +-
+ .../Persistence/OrderRecord.cs                |   6 +
+ .../Persistence/OrderRecordConfiguration.cs   |   2 +
+ .../Persistence/OrdersDbContext.cs            |   3 +
+ .../OrdersApiFactory.cs                       |  17 ++-
+ .../RecordingPublisher.cs                     |  16 ---
+ .../Application/PlaceOrderHandlerTests.cs     |  14 +-
+ .../Infrastructure/EfOrderRepositoryTests.cs  |  25 ++++
+ .../Infrastructure/OutboxRelayTests.cs        | 100 +++++++++++++
+ .../Infrastructure/RabbitMqPublisherTests.cs  |   2 +-
+ .../TestSupport/RecordingOutboxPublisher.cs   |  23 +++
+ .../TestSupport/RecordingPublisher.cs         |  15 --
+ 27 files changed, 621 insertions(+), 80 deletions(-)
+ delete mode 100644 src/Quellbrook.Orders.Application/Abstractions/IIntegrationEventPublisher.cs
+ create mode 100644 src/Quellbrook.Orders.Application/IntegrationMessage.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Outbox/IOutboxPublisher.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Outbox/OutboxMessage.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Outbox/OutboxMessageConfiguration.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Outbox/OutboxOptions.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Outbox/OutboxRelay.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260813094500_AddOutboxAndCancellation.Designer.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260813094500_AddOutboxAndCancellation.cs
+ delete mode 100644 tests/Quellbrook.Orders.IntegrationTests/RecordingPublisher.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/Infrastructure/OutboxRelayTests.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingOutboxPublisher.cs
+ delete mode 100644 tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingPublisher.cs
+
+diff --git a/src/Quellbrook.Orders.Application/Abstractions/IIntegrationEventPublisher.cs b/src/Quellbrook.Orders.Application/Abstractions/IIntegrationEventPublisher.cs
+deleted file mode 100644
+index 50f7109..0000000
+--- a/src/Quellbrook.Orders.Application/Abstractions/IIntegrationEventPublisher.cs
++++ /dev/null
+@@ -1,8 +0,0 @@
+-namespace Quellbrook.Orders.Application.Abstractions;
+-
+-/// <summary>Publishes an integration event to the message broker.</summary>
+-public interface IIntegrationEventPublisher
+-{
+-    Task PublishAsync<T>(Guid messageId, string eventType, T payload, CancellationToken cancellationToken)
+-        where T : class;
+-}
+diff --git a/src/Quellbrook.Orders.Application/IntegrationMessage.cs b/src/Quellbrook.Orders.Application/IntegrationMessage.cs
+new file mode 100644
+index 0000000..662f8d6
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/IntegrationMessage.cs
+@@ -0,0 +1,4 @@
++namespace Quellbrook.Orders.Application;
++
++/// <summary>An integration event ready for the outbox: its message id, routing key and contract payload.</summary>
++public sealed record IntegrationMessage(Guid MessageId, string EventType, object Payload, DateTimeOffset OccurredAt);
+diff --git a/src/Quellbrook.Orders.Application/OrderContractMapper.cs b/src/Quellbrook.Orders.Application/OrderContractMapper.cs
+index 71d51b0..5f6375d 100644
+--- a/src/Quellbrook.Orders.Application/OrderContractMapper.cs
++++ b/src/Quellbrook.Orders.Application/OrderContractMapper.cs
+@@ -1,11 +1,29 @@
+ using Quellbrook.Orders.Contracts.IntegrationEvents;
+ using Quellbrook.Orders.Domain.Orders;
++using Quellbrook.Orders.Domain.Orders.Events;
+ 
+ namespace Quellbrook.Orders.Application;
+ 
+ /// <summary>Maps the Order aggregate to the published contract; the domain never sees the contract types.</summary>
+ public static class OrderContractMapper
+ {
++    /// <summary>The integration messages for the domain events an order raised in this unit of work.</summary>
++    public static IReadOnlyList<IntegrationMessage> ToIntegrationMessages(Order order)
++    {
++        ArgumentNullException.ThrowIfNull(order);
++        return [.. order.DomainEvents.Select(domainEvent => domainEvent switch
++        {
++            OrderPlaced placed => new IntegrationMessage(
++                Guid.CreateVersion7(placed.OccurredAt), OrderPlacedV1.EventType, ToOrderPlaced(order), placed.OccurredAt),
++            OrderCancelled cancelled => new IntegrationMessage(
++                Guid.CreateVersion7(cancelled.OccurredAt),
++                OrderCancelledV1.EventType,
++                new OrderCancelledV1(cancelled.OrderId.Value, cancelled.Reason, cancelled.OccurredAt),
++                cancelled.OccurredAt),
++            _ => throw new InvalidOperationException($"No integration event for {domainEvent.GetType().Name}."),
++        })];
++    }
++
+     public static OrderPlacedV1 ToOrderPlaced(Order order)
+     {
+         ArgumentNullException.ThrowIfNull(order);
+diff --git a/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs b/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs
+index 1eb9beb..a85a66b 100644
+--- a/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs
++++ b/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs
+@@ -1,6 +1,4 @@
+ using Microsoft.Extensions.Logging;
+-using Quellbrook.Orders.Application.Abstractions;
+-using Quellbrook.Orders.Contracts.IntegrationEvents;
+ using Quellbrook.Orders.Domain.Common;
+ using Quellbrook.Orders.Domain.Orders;
+ 
+@@ -8,7 +6,6 @@ namespace Quellbrook.Orders.Application.PlaceOrder;
+ 
+ public sealed partial class PlaceOrderHandler(
+     IOrderRepository orders,
+-    IIntegrationEventPublisher publisher,
+     TimeProvider time,
+     ILogger<PlaceOrderHandler> logger)
+ {
+@@ -27,11 +24,6 @@ public sealed partial class PlaceOrderHandler(
+ 
+         orders.Add(order);
+         await orders.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+-        await publisher.PublishAsync(
+-            Guid.CreateVersion7(order.PlacedAt),
+-            OrderPlacedV1.EventType,
+-            OrderContractMapper.ToOrderPlaced(order),
+-            cancellationToken).ConfigureAwait(false);
+ 
+         LogOrderPlaced(order.Id.Value, order.Customer.Value);
+         return OperationResult.Succeeded(order.Id);
+diff --git a/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs b/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs
+index 0baa95b..78edf85 100644
+--- a/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs
++++ b/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs
+@@ -1,10 +1,10 @@
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
+-using Quellbrook.Orders.Application.Abstractions;
+ using Quellbrook.Orders.Application.Queries;
+ using Quellbrook.Orders.Domain.Orders;
+ using Quellbrook.Orders.Infrastructure.Messaging;
++using Quellbrook.Orders.Infrastructure.Outbox;
+ using Quellbrook.Orders.Infrastructure.Persistence;
+ 
+ namespace Quellbrook.Orders.Infrastructure;
+@@ -22,7 +22,12 @@ public static class InfrastructureServiceCollectionExtensions
+             .ValidateDataAnnotations()
+             .ValidateOnStart();
+         services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
+-        services.AddSingleton<IIntegrationEventPublisher, RabbitMqPublisher>();
++        services.AddSingleton<IOutboxPublisher, RabbitMqPublisher>();
++        services.AddOptions<OutboxOptions>()
++            .BindConfiguration(OutboxOptions.SectionName)
++            .ValidateDataAnnotations()
++            .ValidateOnStart();
++        services.AddHostedService<OutboxRelay>();
+ 
+         services.AddHealthChecks().AddDbContextCheck<OrdersDbContext>("database", tags: ["ready"]);
+         return services;
+diff --git a/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqPublisher.cs b/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqPublisher.cs
+index 53bc274..9c6da7e 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqPublisher.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqPublisher.cs
+@@ -1,6 +1,5 @@
+-using System.Text.Json;
+ using Microsoft.Extensions.Options;
+-using Quellbrook.Orders.Application.Abstractions;
++using Quellbrook.Orders.Infrastructure.Outbox;
+ using RabbitMQ.Client;
+ 
+ namespace Quellbrook.Orders.Infrastructure.Messaging;
+@@ -10,18 +9,9 @@ namespace Quellbrook.Orders.Infrastructure.Messaging;
+ /// for the broker's publisher confirmation.
+ /// </summary>
+ public sealed class RabbitMqPublisher(IRabbitMqConnectionProvider connections, IOptions<RabbitMqOptions> options)
+-    : IIntegrationEventPublisher
++    : IOutboxPublisher
+ {
+-    private static readonly JsonSerializerOptions s_json = new(JsonSerializerDefaults.Web);
+-
+-    public async Task PublishAsync<T>(Guid messageId, string eventType, T payload, CancellationToken cancellationToken)
+-        where T : class
+-    {
+-        var body = JsonSerializer.SerializeToUtf8Bytes(payload, s_json);
+-        await PublishRawAsync(messageId, eventType, body, cancellationToken).ConfigureAwait(false);
+-    }
+-
+-    public async Task PublishRawAsync(Guid messageId, string eventType, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
++    public async Task PublishAsync(Guid messageId, string eventType, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
+     {
+         var exchange = options.Value.Exchange;
+         var connection = await connections.GetConnectionAsync(cancellationToken).ConfigureAwait(false);
+diff --git a/src/Quellbrook.Orders.Infrastructure/Outbox/IOutboxPublisher.cs b/src/Quellbrook.Orders.Infrastructure/Outbox/IOutboxPublisher.cs
+new file mode 100644
+index 0000000..379f9ae
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Outbox/IOutboxPublisher.cs
+@@ -0,0 +1,7 @@
++namespace Quellbrook.Orders.Infrastructure.Outbox;
++
++/// <summary>Sends one stored message to the broker; returns once the broker has confirmed it.</summary>
++public interface IOutboxPublisher
++{
++    Task PublishAsync(Guid messageId, string eventType, ReadOnlyMemory<byte> body, CancellationToken cancellationToken);
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxMessage.cs b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxMessage.cs
+new file mode 100644
+index 0000000..c36d657
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxMessage.cs
+@@ -0,0 +1,17 @@
++namespace Quellbrook.Orders.Infrastructure.Outbox;
++
++/// <summary>An integration event stored with the change that raised it, waiting to be published (ADR 0003).</summary>
++public sealed class OutboxMessage
++{
++    public Guid Id { get; set; }
++
++    public string Type { get; set; } = string.Empty;
++
++    public string Payload { get; set; } = string.Empty;
++
++    public DateTimeOffset OccurredAt { get; set; }
++
++    public DateTimeOffset? DispatchedAt { get; set; }
++
++    public int Attempts { get; set; }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxMessageConfiguration.cs b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxMessageConfiguration.cs
+new file mode 100644
+index 0000000..53706ff
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxMessageConfiguration.cs
+@@ -0,0 +1,16 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++
++namespace Quellbrook.Orders.Infrastructure.Outbox;
++
++internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<OutboxMessage>
++{
++    public void Configure(EntityTypeBuilder<OutboxMessage> builder)
++    {
++        builder.ToTable("outbox_messages");
++        builder.HasKey(message => message.Id);
++        builder.Property(message => message.Type).HasMaxLength(100).IsRequired();
++        builder.Property(message => message.Payload).HasColumnType("jsonb").IsRequired();
++        builder.HasIndex(message => new { message.DispatchedAt, message.OccurredAt });
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxOptions.cs b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxOptions.cs
+new file mode 100644
+index 0000000..527620a
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxOptions.cs
+@@ -0,0 +1,15 @@
++using System.ComponentModel.DataAnnotations;
++
++namespace Quellbrook.Orders.Infrastructure.Outbox;
++
++public sealed class OutboxOptions
++{
++    public const string SectionName = "Outbox";
++
++    /// <summary>How often the relay looks for undispatched messages.</summary>
++    [Range(typeof(TimeSpan), "00:00:00.100", "00:01:00")]
++    public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(2);
++
++    [Range(1, 500)]
++    public int BatchSize { get; set; } = 50;
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxRelay.cs b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxRelay.cs
+new file mode 100644
+index 0000000..e565d1a
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Outbox/OutboxRelay.cs
+@@ -0,0 +1,79 @@
++using System.Text;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using Quellbrook.Orders.Infrastructure.Persistence;
++
++namespace Quellbrook.Orders.Infrastructure.Outbox;
++
++/// <summary>
++/// Publishes stored messages in the order they occurred and marks each one dispatched (ADR 0003). A failure stops the
++/// batch so that order is kept; the message is retried on the next poll.
++/// </summary>
++public sealed partial class OutboxRelay(
++    IServiceScopeFactory scopes,
++    IOutboxPublisher publisher,
++    TimeProvider time,
++    IOptions<OutboxOptions> options,
++    ILogger<OutboxRelay> logger) : BackgroundService
++{
++    public async Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
++    {
++        using var scope = scopes.CreateScope();
++        var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
++        var pending = await db.OutboxMessages
++            .Where(message => message.DispatchedAt == null)
++            .OrderBy(message => message.OccurredAt)
++            .ThenBy(message => message.Id)
++            .Take(options.Value.BatchSize)
++            .ToListAsync(cancellationToken)
++            .ConfigureAwait(false);
++
++        var dispatched = 0;
++        foreach (var message in pending)
++        {
++            try
++            {
++                await publisher.PublishAsync(message.Id, message.Type, Encoding.UTF8.GetBytes(message.Payload), cancellationToken)
++                    .ConfigureAwait(false);
++            }
++            catch (Exception exception) when (exception is not OperationCanceledException)
++            {
++                message.Attempts++;
++                await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
++                LogPublishFailed(exception, message.Id, message.Type, message.Attempts);
++                break;
++            }
++
++            message.DispatchedAt = time.GetUtcNow();
++            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
++            dispatched++;
++        }
++
++        return dispatched;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        using var timer = new PeriodicTimer(options.Value.PollInterval, time);
++        while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
++        {
++            try
++            {
++                await DispatchPendingAsync(stoppingToken).ConfigureAwait(false);
++            }
++            catch (DbUpdateException exception)
++            {
++                LogStoreFailed(exception);
++            }
++        }
++    }
++
++    [LoggerMessage(Level = LogLevel.Warning, Message = "Publishing outbox message {MessageId} ({EventType}) failed, attempt {Attempts}; retrying on the next poll")]
++    private partial void LogPublishFailed(Exception exception, Guid messageId, string eventType, int attempts);
++
++    [LoggerMessage(Level = LogLevel.Error, Message = "The outbox could not be updated; retrying on the next poll")]
++    private partial void LogStoreFailed(Exception exception);
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs
+index 55f3cf8..544de29 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs
+@@ -1,14 +1,20 @@
++using System.Text.Json;
+ using Microsoft.EntityFrameworkCore;
++using Quellbrook.Orders.Application;
+ using Quellbrook.Orders.Domain.Orders;
++using Quellbrook.Orders.Infrastructure.Outbox;
+ 
+ namespace Quellbrook.Orders.Infrastructure.Persistence;
+ 
+ /// <summary>
+ /// Loads and stores Order aggregates. Every aggregate loaded or added through one repository instance (one request)
+-/// is written back by <see cref="SaveChangesAsync"/>.
++/// is written back by <see cref="SaveChangesAsync"/>, together with the outbox messages for the events it raised, in
++/// one transaction (ADR 0003).
+ /// </summary>
+ public sealed class EfOrderRepository(OrdersDbContext db) : IOrderRepository
+ {
++    private static readonly JsonSerializerOptions s_json = new(JsonSerializerDefaults.Web);
++
+     private readonly Dictionary<Guid, (Order Order, OrderRecord Record)> _tracked = [];
+ 
+     public async Task<Order?> FindAsync(OrderId id, CancellationToken cancellationToken)
+@@ -48,9 +54,22 @@ public sealed class EfOrderRepository(OrdersDbContext db) : IOrderRepository
+                 record.Version++;
+             }
+ 
+-            order.ClearDomainEvents();
++            foreach (var message in OrderContractMapper.ToIntegrationMessages(order))
++            {
++                db.OutboxMessages.Add(new OutboxMessage
++                {
++                    Id = message.MessageId,
++                    Type = message.EventType,
++                    Payload = JsonSerializer.Serialize(message.Payload, message.Payload.GetType(), s_json),
++                    OccurredAt = message.OccurredAt,
++                });
++            }
+         }
+ 
+         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
++        foreach (var (order, _) in _tracked.Values)
++        {
++            order.ClearDomainEvents();
++        }
+     }
+ }
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260813094500_AddOutboxAndCancellation.Designer.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260813094500_AddOutboxAndCancellation.Designer.cs
+new file mode 100644
+index 0000000..1433cc4
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260813094500_AddOutboxAndCancellation.Designer.cs
+@@ -0,0 +1,133 @@
++﻿// <auto-generated />
++using System;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
++using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
++using Quellbrook.Orders.Infrastructure.Persistence;
++
++#nullable disable
++
++namespace Quellbrook.Orders.Infrastructure.Persistence.Migrations
++{
++    [DbContext(typeof(OrdersDbContext))]
++    [Migration("20260813094500_AddOutboxAndCancellation")]
++    partial class AddOutboxAndCancellation
++    {
++        /// <inheritdoc />
++        protected override void BuildTargetModel(ModelBuilder modelBuilder)
++        {
++#pragma warning disable 612, 618
++            modelBuilder
++                .HasAnnotation("ProductVersion", "10.0.12")
++                .HasAnnotation("Relational:MaxIdentifierLength", 63);
++
++            NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
++
++            modelBuilder.Entity("Quellbrook.Orders.Infrastructure.Outbox.OutboxMessage", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uuid");
++
++                    b.Property<int>("Attempts")
++                        .HasColumnType("integer");
++
++                    b.Property<DateTimeOffset?>("DispatchedAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<DateTimeOffset>("OccurredAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<string>("Payload")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<string>("Type")
++                        .IsRequired()
++                        .HasMaxLength(100)
++                        .HasColumnType("character varying(100)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("DispatchedAt", "OccurredAt");
++
++                    b.ToTable("outbox_messages", (string)null);
++                });
++
++            modelBuilder.Entity("Quellbrook.Orders.Infrastructure.Persistence.OrderRecord", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uuid");
++
++                    b.Property<string>("CancellationReason")
++                        .HasMaxLength(200)
++                        .HasColumnType("character varying(200)");
++
++                    b.Property<DateTimeOffset?>("CancelledAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<string>("CancelledBy")
++                        .HasMaxLength(64)
++                        .HasColumnType("character varying(64)");
++
++                    b.Property<string>("Consignee")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<string>("ConsigneeName")
++                        .IsRequired()
++                        .HasMaxLength(100)
++                        .HasColumnType("character varying(100)");
++
++                    b.Property<string>("CustomerAccountId")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<string>("DestinationCity")
++                        .IsRequired()
++                        .HasMaxLength(60)
++                        .HasColumnType("character varying(60)");
++
++                    b.Property<int>("ParcelCount")
++                        .HasColumnType("integer");
++
++                    b.Property<string>("Parcels")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<DateTimeOffset>("PlacedAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<string>("PlacedBy")
++                        .IsRequired()
++                        .HasMaxLength(64)
++                        .HasColumnType("character varying(64)");
++
++                    b.Property<string>("ServiceLevel")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<string>("Status")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<int>("Version")
++                        .IsConcurrencyToken()
++                        .HasColumnType("integer");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("PlacedAt");
++
++                    b.ToTable("orders", (string)null);
++                });
++#pragma warning restore 612, 618
++        }
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260813094500_AddOutboxAndCancellation.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260813094500_AddOutboxAndCancellation.cs
+new file mode 100644
+index 0000000..0800387
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260813094500_AddOutboxAndCancellation.cs
+@@ -0,0 +1,75 @@
++﻿using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace Quellbrook.Orders.Infrastructure.Persistence.Migrations
++{
++    /// <inheritdoc />
++    public partial class AddOutboxAndCancellation : Migration
++    {
++        /// <inheritdoc />
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "CancellationReason",
++                table: "orders",
++                type: "character varying(200)",
++                maxLength: 200,
++                nullable: true);
++
++            migrationBuilder.AddColumn<DateTimeOffset>(
++                name: "CancelledAt",
++                table: "orders",
++                type: "timestamp with time zone",
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "CancelledBy",
++                table: "orders",
++                type: "character varying(64)",
++                maxLength: 64,
++                nullable: true);
++
++            migrationBuilder.CreateTable(
++                name: "outbox_messages",
++                columns: table => new
++                {
++                    Id = table.Column<Guid>(type: "uuid", nullable: false),
++                    Type = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
++                    Payload = table.Column<string>(type: "jsonb", nullable: false),
++                    OccurredAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
++                    DispatchedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
++                    Attempts = table.Column<int>(type: "integer", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_outbox_messages", x => x.Id);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_outbox_messages_DispatchedAt_OccurredAt",
++                table: "outbox_messages",
++                columns: new[] { "DispatchedAt", "OccurredAt" });
++        }
++
++        /// <inheritdoc />
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "outbox_messages");
++
++            migrationBuilder.DropColumn(
++                name: "CancellationReason",
++                table: "orders");
++
++            migrationBuilder.DropColumn(
++                name: "CancelledAt",
++                table: "orders");
++
++            migrationBuilder.DropColumn(
++                name: "CancelledBy",
++                table: "orders");
++        }
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs
+index e6bae5a..48f72be 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs
+@@ -22,12 +22,54 @@ namespace Quellbrook.Orders.Infrastructure.Persistence.Migrations
+ 
+             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+ 
++            modelBuilder.Entity("Quellbrook.Orders.Infrastructure.Outbox.OutboxMessage", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uuid");
++
++                    b.Property<int>("Attempts")
++                        .HasColumnType("integer");
++
++                    b.Property<DateTimeOffset?>("DispatchedAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<DateTimeOffset>("OccurredAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<string>("Payload")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<string>("Type")
++                        .IsRequired()
++                        .HasMaxLength(100)
++                        .HasColumnType("character varying(100)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("DispatchedAt", "OccurredAt");
++
++                    b.ToTable("outbox_messages", (string)null);
++                });
++
+             modelBuilder.Entity("Quellbrook.Orders.Infrastructure.Persistence.OrderRecord", b =>
+                 {
+                     b.Property<Guid>("Id")
+                         .ValueGeneratedOnAdd()
+                         .HasColumnType("uuid");
+ 
++                    b.Property<string>("CancellationReason")
++                        .HasMaxLength(200)
++                        .HasColumnType("character varying(200)");
++
++                    b.Property<DateTimeOffset?>("CancelledAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<string>("CancelledBy")
++                        .HasMaxLength(64)
++                        .HasColumnType("character varying(64)");
++
+                     b.Property<string>("Consignee")
+                         .IsRequired()
+                         .HasColumnType("jsonb");
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs
+index d283f04..9551dd3 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs
+@@ -51,6 +51,9 @@ internal static class OrderDocuments
+             s_json);
+         record.PlacedBy = order.PlacedBy;
+         record.PlacedAt = order.PlacedAt;
++        record.CancelledBy = order.CancelledBy;
++        record.CancelledAt = order.CancelledAt;
++        record.CancellationReason = order.CancellationReason;
+     }
+ 
+     public static Order ToOrder(OrderRecord record)
+@@ -71,7 +74,10 @@ internal static class OrderDocuments
+                 Dimensions.Create(parcel.LengthCm, parcel.WidthCm, parcel.HeightCm))),
+             Enum.Parse<OrderStatus>(record.Status),
+             record.PlacedBy,
+-            record.PlacedAt);
++            record.PlacedAt,
++            record.CancelledAt is { } cancelledAt
++                ? new Cancellation(record.CancelledBy ?? string.Empty, cancelledAt, record.CancellationReason ?? string.Empty)
++                : null);
+     }
+ 
+     private static T Deserialize<T>(string json) =>
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs
+index d4983e7..46af2e1 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs
+@@ -29,5 +29,11 @@ public sealed class OrderRecord
+ 
+     public DateTimeOffset PlacedAt { get; set; }
+ 
++    public string? CancelledBy { get; set; }
++
++    public DateTimeOffset? CancelledAt { get; set; }
++
++    public string? CancellationReason { get; set; }
++
+     public int Version { get; set; }
+ }
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs
+index 38e1101..f81b71f 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs
+@@ -17,6 +17,8 @@ internal sealed class OrderRecordConfiguration : IEntityTypeConfiguration<OrderR
+         builder.Property(order => order.Consignee).HasColumnType("jsonb").IsRequired();
+         builder.Property(order => order.Parcels).HasColumnType("jsonb").IsRequired();
+         builder.Property(order => order.PlacedBy).HasMaxLength(64).IsRequired();
++        builder.Property(order => order.CancelledBy).HasMaxLength(64);
++        builder.Property(order => order.CancellationReason).HasMaxLength(200);
+         builder.Property(order => order.Version).IsConcurrencyToken();
+         builder.HasIndex(order => order.PlacedAt);
+     }
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrdersDbContext.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrdersDbContext.cs
+index d47d4df..cf602be 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/OrdersDbContext.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrdersDbContext.cs
+@@ -1,4 +1,5 @@
+ using Microsoft.EntityFrameworkCore;
++using Quellbrook.Orders.Infrastructure.Outbox;
+ 
+ namespace Quellbrook.Orders.Infrastructure.Persistence;
+ 
+@@ -6,6 +7,8 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) :
+ {
+     public DbSet<OrderRecord> Orders => Set<OrderRecord>();
+ 
++    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
++
+     protected override void OnModelCreating(ModelBuilder modelBuilder)
+     {
+         ArgumentNullException.ThrowIfNull(modelBuilder);
+diff --git a/tests/Quellbrook.Orders.IntegrationTests/OrdersApiFactory.cs b/tests/Quellbrook.Orders.IntegrationTests/OrdersApiFactory.cs
+index d74f374..b9bc20c 100644
+--- a/tests/Quellbrook.Orders.IntegrationTests/OrdersApiFactory.cs
++++ b/tests/Quellbrook.Orders.IntegrationTests/OrdersApiFactory.cs
+@@ -11,14 +11,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
+ using Microsoft.Extensions.Hosting;
+ using Microsoft.IdentityModel.Protocols;
+ using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+-using Quellbrook.Orders.Application.Abstractions;
++using Quellbrook.Orders.Infrastructure.Outbox;
+ using Quellbrook.Orders.Infrastructure.Persistence;
+ 
+ namespace Quellbrook.Orders.IntegrationTests;
+ 
+ /// <summary>
+-/// Hosts the real API in memory over a throw-away SQLite database, with the broker and the token issuer replaced by
+-/// in-process stand-ins.
++/// Hosts the real API in memory over a throw-away SQLite database and an in-process token issuer. The outbox relay
++/// does not run; tests read the outbox table to see what would be published.
+ /// </summary>
+ public sealed class OrdersApiFactory : WebApplicationFactory<Program>
+ {
+@@ -26,8 +26,6 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>
+ 
+     public TestTokens Tokens { get; } = new();
+ 
+-    public RecordingPublisher Publisher { get; } = new();
+-
+     public HttpClient CreateClient(string? operatorId, params string[] scopes)
+     {
+         var client = CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("http://orders.test") });
+@@ -60,8 +58,7 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>
+             services.AddDbContext<OrdersDbContext>(options => options
+                 .UseSqlite(_connection)
+                 .ReplaceService<IModelCustomizer, SqliteModelCustomizer>());
+-            services.RemoveAll<IIntegrationEventPublisher>();
+-            services.AddSingleton<IIntegrationEventPublisher>(Publisher);
++            services.RemoveAll<IHostedService>();
+             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
+             {
+                 var metadata = Tokens.Metadata();
+@@ -79,6 +76,12 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>
+         return host;
+     }
+ 
++    public List<OutboxMessage> Outbox()
++    {
++        using var scope = Services.CreateScope();
++        return [.. scope.ServiceProvider.GetRequiredService<OrdersDbContext>().OutboxMessages];
++    }
++
+     protected override void Dispose(bool disposing)
+     {
+         if (disposing)
+diff --git a/tests/Quellbrook.Orders.IntegrationTests/RecordingPublisher.cs b/tests/Quellbrook.Orders.IntegrationTests/RecordingPublisher.cs
+deleted file mode 100644
+index db4bf8c..0000000
+--- a/tests/Quellbrook.Orders.IntegrationTests/RecordingPublisher.cs
++++ /dev/null
+@@ -1,16 +0,0 @@
+-using System.Collections.Concurrent;
+-using Quellbrook.Orders.Application.Abstractions;
+-
+-namespace Quellbrook.Orders.IntegrationTests;
+-
+-public sealed class RecordingPublisher : IIntegrationEventPublisher
+-{
+-    public ConcurrentQueue<(Guid MessageId, string EventType, object Payload)> Published { get; } = new();
+-
+-    public Task PublishAsync<T>(Guid messageId, string eventType, T payload, CancellationToken cancellationToken)
+-        where T : class
+-    {
+-        Published.Enqueue((messageId, eventType, payload));
+-        return Task.CompletedTask;
+-    }
+-}
+diff --git a/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs b/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs
+index e41f28c..b82e452 100644
+--- a/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs
++++ b/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs
+@@ -3,6 +3,7 @@ using Microsoft.Extensions.Time.Testing;
+ using Quellbrook.Orders.Application;
+ using Quellbrook.Orders.Application.PlaceOrder;
+ using Quellbrook.Orders.Contracts.IntegrationEvents;
++using Quellbrook.Orders.Domain.Orders.Events;
+ using Quellbrook.Orders.UnitTests.TestSupport;
+ 
+ namespace Quellbrook.Orders.UnitTests.Application;
+@@ -10,22 +11,22 @@ namespace Quellbrook.Orders.UnitTests.Application;
+ public sealed class PlaceOrderHandlerTests
+ {
+     private readonly InMemoryOrderRepository _orders = new();
+-    private readonly RecordingPublisher _publisher = new();
+     private readonly FakeTimeProvider _time = new(OrderData.PlacedAt);
+ 
+-    private PlaceOrderHandler Handler() => new(_orders, _publisher, _time, NullLogger<PlaceOrderHandler>.Instance);
++    private PlaceOrderHandler Handler() => new(_orders, _time, NullLogger<PlaceOrderHandler>.Instance);
+ 
+     [Fact]
+-    public async Task AValidOrderIsStoredAndAnnounced()
++    public async Task AValidOrderIsStoredWithItsOrderPlacedEvent()
+     {
+         var result = await Handler().HandleAsync(OrderData.Command(parcels: 2), TestContext.Current.CancellationToken);
+ 
+         Assert.Equal(OperationStatus.Succeeded, result.Status);
+         var order = Assert.Single(_orders.Stored.Values);
+         Assert.Equal(1, _orders.Saves);
+-        var (_, eventType, payload) = Assert.Single(_publisher.Published);
+-        Assert.Equal(OrderPlacedV1.EventType, eventType);
+-        var placed = Assert.IsType<OrderPlacedV1>(payload);
++        Assert.IsType<OrderPlaced>(Assert.Single(order.DomainEvents));
++        var message = Assert.Single(OrderContractMapper.ToIntegrationMessages(order));
++        Assert.Equal(OrderPlacedV1.EventType, message.EventType);
++        var placed = Assert.IsType<OrderPlacedV1>(message.Payload);
+         Assert.Equal(order.Id.Value, placed.OrderId);
+         Assert.Equal("standard", placed.ServiceLevel);
+         Assert.Equal("DK", placed.Consignee.Address.CountryCode);
+@@ -40,7 +41,6 @@ public sealed class PlaceOrderHandlerTests
+         Assert.Equal(OperationStatus.Invalid, result.Status);
+         Assert.Contains("overnight", result.Error, StringComparison.Ordinal);
+         Assert.Empty(_orders.Stored);
+-        Assert.Empty(_publisher.Published);
+     }
+ 
+     [Fact]
+diff --git a/tests/Quellbrook.Orders.UnitTests/Infrastructure/EfOrderRepositoryTests.cs b/tests/Quellbrook.Orders.UnitTests/Infrastructure/EfOrderRepositoryTests.cs
+index cabc5f2..b44df15 100644
+--- a/tests/Quellbrook.Orders.UnitTests/Infrastructure/EfOrderRepositoryTests.cs
++++ b/tests/Quellbrook.Orders.UnitTests/Infrastructure/EfOrderRepositoryTests.cs
+@@ -44,6 +44,31 @@ public sealed class EfOrderRepositoryTests : IDisposable
+         Assert.Empty(order.DomainEvents);
+     }
+ 
++    [Fact]
++    public async Task SavingWritesOneOutboxMessagePerEventInTheSameTransaction()
++    {
++        var order = OrderData.Placed();
++        using (var context = _db.CreateContext())
++        {
++            var repository = new EfOrderRepository(context);
++            repository.Add(order);
++            await repository.SaveChangesAsync(TestContext.Current.CancellationToken);
++            var loaded = await repository.FindAsync(order.Id, TestContext.Current.CancellationToken);
++            Assert.NotNull(loaded);
++            loaded.Cancel("Shipper withdrew the order", "operator-4", OrderData.PlacedAt.AddHours(1));
++            await repository.SaveChangesAsync(TestContext.Current.CancellationToken);
++        }
++
++        using var reading = _db.CreateContext();
++        var messages = reading.OutboxMessages.OrderBy(message => message.OccurredAt).ToList();
++        Assert.Equal(["orders.order-placed.v1", "orders.order-cancelled.v1"], messages.Select(message => message.Type));
++        Assert.All(messages, message => Assert.Null(message.DispatchedAt));
++        Assert.Contains("\"reason\":\"Shipper withdrew the order\"", messages[1].Payload, StringComparison.Ordinal);
++        var stored = await new EfOrderRepository(reading).FindAsync(order.Id, TestContext.Current.CancellationToken);
++        Assert.Equal(OrderStatus.Cancelled, stored?.Status);
++        Assert.Equal("operator-4", stored?.CancelledBy);
++    }
++
+     [Fact]
+     public async Task AnUnknownOrderIsNotFound()
+     {
+diff --git a/tests/Quellbrook.Orders.UnitTests/Infrastructure/OutboxRelayTests.cs b/tests/Quellbrook.Orders.UnitTests/Infrastructure/OutboxRelayTests.cs
+new file mode 100644
+index 0000000..d0128cd
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/Infrastructure/OutboxRelayTests.cs
+@@ -0,0 +1,100 @@
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using Microsoft.Extensions.Time.Testing;
++using Quellbrook.Orders.Infrastructure.Outbox;
++using Quellbrook.Orders.Infrastructure.Persistence;
++using Quellbrook.Orders.UnitTests.TestSupport;
++
++namespace Quellbrook.Orders.UnitTests.Infrastructure;
++
++public sealed class OutboxRelayTests : IDisposable
++{
++    private readonly SqliteOrdersDb _db = new();
++    private readonly RecordingOutboxPublisher _publisher = new();
++    private readonly FakeTimeProvider _time = new(OrderData.PlacedAt.AddMinutes(5));
++    private readonly ServiceProvider _services;
++
++    public OutboxRelayTests()
++    {
++        _services = new ServiceCollection().AddScoped(_ => _db.CreateContext()).BuildServiceProvider();
++    }
++
++    private OutboxRelay Relay(int batchSize = 50) =>
++        new(_services.GetRequiredService<IServiceScopeFactory>(), _publisher, _time,
++            Options.Create(new OutboxOptions { BatchSize = batchSize }), NullLogger<OutboxRelay>.Instance);
++
++    [Fact]
++    public async Task PendingMessagesArePublishedInOrderAndMarkedDispatched()
++    {
++        await StoreAsync(("orders.order-placed.v1", 1), ("orders.order-cancelled.v1", 2));
++
++        var dispatched = await Relay().DispatchPendingAsync(TestContext.Current.CancellationToken);
++
++        Assert.Equal(2, dispatched);
++        Assert.Equal(["orders.order-placed.v1", "orders.order-cancelled.v1"], _publisher.Published.Select(message => message.EventType));
++        using var context = _db.CreateContext();
++        Assert.All(context.OutboxMessages, message => Assert.Equal(_time.GetUtcNow(), message.DispatchedAt));
++    }
++
++    [Fact]
++    public async Task ADispatchedMessageIsNotPublishedAgain()
++    {
++        await StoreAsync(("orders.order-placed.v1", 1));
++        await Relay().DispatchPendingAsync(TestContext.Current.CancellationToken);
++
++        var again = await Relay().DispatchPendingAsync(TestContext.Current.CancellationToken);
++
++        Assert.Equal(0, again);
++        Assert.Single(_publisher.Published);
++    }
++
++    [Fact]
++    public async Task AFailureStopsTheBatchKeepsOrderAndCountsTheAttempt()
++    {
++        await StoreAsync(("orders.order-placed.v1", 1), ("orders.order-cancelled.v1", 2), ("orders.order-placed.v1", 3));
++        _publisher.FailOn = "orders.order-cancelled.v1";
++
++        var dispatched = await Relay().DispatchPendingAsync(TestContext.Current.CancellationToken);
++
++        Assert.Equal(1, dispatched);
++        using var context = _db.CreateContext();
++        var failed = context.OutboxMessages.Single(message => message.Type == "orders.order-cancelled.v1");
++        Assert.Null(failed.DispatchedAt);
++        Assert.Equal(1, failed.Attempts);
++        Assert.Equal(1, context.OutboxMessages.Count(message => message.DispatchedAt != null));
++    }
++
++    [Fact]
++    public async Task OneBatchTakesAtMostBatchSizeMessages()
++    {
++        await StoreAsync(("orders.order-placed.v1", 1), ("orders.order-placed.v1", 2), ("orders.order-placed.v1", 3));
++
++        var dispatched = await Relay(batchSize: 2).DispatchPendingAsync(TestContext.Current.CancellationToken);
++
++        Assert.Equal(2, dispatched);
++    }
++
++    private async Task StoreAsync(params (string Type, int Minute)[] messages)
++    {
++        using var context = _db.CreateContext();
++        foreach (var (type, minute) in messages)
++        {
++            context.OutboxMessages.Add(new OutboxMessage
++            {
++                Id = Guid.NewGuid(),
++                Type = type,
++                Payload = "{}",
++                OccurredAt = OrderData.PlacedAt.AddMinutes(minute),
++            });
++        }
++
++        await context.SaveChangesAsync(TestContext.Current.CancellationToken);
++    }
++
++    public void Dispose()
++    {
++        _services.Dispose();
++        _db.Dispose();
++    }
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqPublisherTests.cs b/tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqPublisherTests.cs
+index 014b9bf..195a42c 100644
+--- a/tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqPublisherTests.cs
++++ b/tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqPublisherTests.cs
+@@ -31,7 +31,7 @@ public sealed class RabbitMqPublisherTests
+             Arg.Do<ReadOnlyMemory<byte>>(value => body = value),
+             Arg.Any<CancellationToken>());
+ 
+-        await publisher.PublishAsync(messageId, "orders.order-placed.v1", new { OrderId = 42 }, TestContext.Current.CancellationToken);
++        await publisher.PublishAsync(messageId, "orders.order-placed.v1", "{\"orderId\":42}"u8.ToArray(), TestContext.Current.CancellationToken);
+ 
+         await _channel.Received(1).ExchangeDeclareAsync(
+             "quellbrook.events", ExchangeType.Topic, true, Arg.Is(false), Arg.Any<IDictionary<string, object?>?>(),
+diff --git a/tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingOutboxPublisher.cs b/tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingOutboxPublisher.cs
+new file mode 100644
+index 0000000..858e9c7
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingOutboxPublisher.cs
+@@ -0,0 +1,23 @@
++using System.Text;
++using Quellbrook.Orders.Infrastructure.Outbox;
++
++namespace Quellbrook.Orders.UnitTests.TestSupport;
++
++internal sealed class RecordingOutboxPublisher : IOutboxPublisher
++{
++    public List<(Guid MessageId, string EventType, string Body)> Published { get; } = [];
++
++    /// <summary>Publishing the message with this event type throws, as a broker outage would.</summary>
++    public string? FailOn { get; set; }
++
++    public Task PublishAsync(Guid messageId, string eventType, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
++    {
++        if (eventType == FailOn)
++        {
++            throw new InvalidOperationException("broker unavailable");
++        }
++
++        Published.Add((messageId, eventType, Encoding.UTF8.GetString(body.Span)));
++        return Task.CompletedTask;
++    }
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingPublisher.cs b/tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingPublisher.cs
+deleted file mode 100644
+index 4f7dc5f..0000000
+--- a/tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingPublisher.cs
++++ /dev/null
+@@ -1,15 +0,0 @@
+-using Quellbrook.Orders.Application.Abstractions;
+-
+-namespace Quellbrook.Orders.UnitTests.TestSupport;
+-
+-internal sealed class RecordingPublisher : IIntegrationEventPublisher
+-{
+-    public List<(Guid MessageId, string EventType, object Payload)> Published { get; } = [];
+-
+-    public Task PublishAsync<T>(Guid messageId, string eventType, T payload, CancellationToken cancellationToken)
+-        where T : class
+-    {
+-        Published.Add((messageId, eventType, payload));
+-        return Task.CompletedTask;
+-    }
+-}

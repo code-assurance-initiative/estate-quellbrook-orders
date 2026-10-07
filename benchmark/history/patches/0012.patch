@@ -1,0 +1,123 @@
+From 00d8d41632ff04702b43f24217757e899a4144e4 Mon Sep 17 00:00:00 2001
+From: Pavel Strand <pavel.strand@example.invalid>
+Date: Wed, 12 Aug 2026 14:37:02 +0200
+Subject: feat(domain): cancel an order with a reason
+
+---
+ .../Orders/Cancellation.cs                    |  4 ++
+ .../Orders/Events/OrderCancelled.cs           |  5 +++
+ src/Quellbrook.Orders.Domain/Orders/Order.cs  | 37 ++++++++++++++++++-
+ .../Domain/OrderTests.cs                      | 24 ++++++++++++
+ 4 files changed, 68 insertions(+), 2 deletions(-)
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/Cancellation.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/Events/OrderCancelled.cs
+
+diff --git a/src/Quellbrook.Orders.Domain/Orders/Cancellation.cs b/src/Quellbrook.Orders.Domain/Orders/Cancellation.cs
+new file mode 100644
+index 0000000..dacbce4
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/Cancellation.cs
+@@ -0,0 +1,4 @@
++namespace Quellbrook.Orders.Domain.Orders;
++
++/// <summary>Who cancelled an order, when and why — as stored.</summary>
++public sealed record Cancellation(string By, DateTimeOffset At, string Reason);
+diff --git a/src/Quellbrook.Orders.Domain/Orders/Events/OrderCancelled.cs b/src/Quellbrook.Orders.Domain/Orders/Events/OrderCancelled.cs
+new file mode 100644
+index 0000000..b053f3d
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/Events/OrderCancelled.cs
+@@ -0,0 +1,5 @@
++using Quellbrook.Orders.Domain.Common;
++
++namespace Quellbrook.Orders.Domain.Orders.Events;
++
++public sealed record OrderCancelled(OrderId OrderId, string Reason, DateTimeOffset OccurredAt) : IDomainEvent;
+diff --git a/src/Quellbrook.Orders.Domain/Orders/Order.cs b/src/Quellbrook.Orders.Domain/Orders/Order.cs
+index de0182f..5e62112 100644
+--- a/src/Quellbrook.Orders.Domain/Orders/Order.cs
++++ b/src/Quellbrook.Orders.Domain/Orders/Order.cs
+@@ -48,6 +48,12 @@ public sealed class Order : AggregateRoot
+ 
+     public DateTimeOffset PlacedAt { get; }
+ 
++    public string? CancelledBy { get; private set; }
++
++    public DateTimeOffset? CancelledAt { get; private set; }
++
++    public string? CancellationReason { get; private set; }
++
+     public int TotalWeightGrams => _parcels.Sum(parcel => parcel.WeightGrams);
+ 
+     public static Order Place(
+@@ -80,8 +86,35 @@ public sealed class Order : AggregateRoot
+         IEnumerable<Parcel> parcels,
+         OrderStatus status,
+         string placedBy,
+-        DateTimeOffset placedAt) =>
+-        new(id, customer, consignee, serviceLevel, [.. parcels], placedBy, placedAt) { Status = status };
++        DateTimeOffset placedAt,
++        Cancellation? cancellation = null) =>
++        new(id, customer, consignee, serviceLevel, [.. parcels], placedBy, placedAt)
++        {
++            Status = status,
++            CancelledBy = cancellation?.By,
++            CancelledAt = cancellation?.At,
++            CancellationReason = cancellation?.Reason,
++        };
++
++    /// <summary>
++    /// Cancels a placed order. Dispatch drops the consignment when it hears of it; a parcel already on a route is
++    /// returned to the depot by the driver.
++    /// </summary>
++    public void Cancel(string reason, string cancelledBy, DateTimeOffset cancelledAt)
++    {
++        ArgumentException.ThrowIfNullOrWhiteSpace(cancelledBy);
++        if (Status == OrderStatus.Cancelled)
++        {
++            throw new DomainException($"Order {Id} is already cancelled.");
++        }
++
++        var trimmedReason = Text.Required(reason, 200, nameof(reason));
++        Status = OrderStatus.Cancelled;
++        CancelledBy = cancelledBy;
++        CancelledAt = cancelledAt;
++        CancellationReason = trimmedReason;
++        Raise(new OrderCancelled(Id, trimmedReason, cancelledAt));
++    }
+ 
+     private static void EnsureParcelsAllowed(ServiceLevel serviceLevel, IReadOnlyList<ParcelSpecification> parcels)
+     {
+diff --git a/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs b/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs
+index 68aacf6..f95a4b1 100644
+--- a/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs
++++ b/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs
+@@ -58,4 +58,28 @@ public sealed class OrderTests
+         Assert.Empty(restored.DomainEvents);
+         Assert.Equal(placed.TotalWeightGrams, restored.TotalWeightGrams);
+     }
++
++    [Fact]
++    public void CancellingRecordsWhoWhenAndWhyAndRaisesOrderCancelled()
++    {
++        var order = OrderData.Placed();
++        order.ClearDomainEvents();
++        var at = OrderData.PlacedAt.AddHours(2);
++
++        order.Cancel(" Consignee moved ", "operator-4", at);
++
++        Assert.Equal(OrderStatus.Cancelled, order.Status);
++        Assert.Equal(("operator-4", at, "Consignee moved"), (order.CancelledBy, order.CancelledAt, order.CancellationReason));
++        var cancelled = Assert.IsType<OrderCancelled>(Assert.Single(order.DomainEvents));
++        Assert.Equal("Consignee moved", cancelled.Reason);
++    }
++
++    [Fact]
++    public void AnOrderCannotBeCancelledTwice()
++    {
++        var order = OrderData.Placed();
++        order.Cancel("first", "operator-4", OrderData.PlacedAt);
++
++        Assert.Throws<DomainException>(() => order.Cancel("second", "operator-4", OrderData.PlacedAt));
++    }
+ }

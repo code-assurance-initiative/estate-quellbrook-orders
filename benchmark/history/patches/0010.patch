@@ -1,0 +1,28 @@
+From 9f4cb576ed894b7a1bc2f2ac29f3ca16f1689101 Mon Sep 17 00:00:00 2001
+From: Ruth Calloway <ruth.calloway@example.invalid>
+Date: Fri, 7 Aug 2026 16:04:30 +0200
+Subject: release 0.1.0
+
+---
+ CHANGELOG.md | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+ create mode 100644 CHANGELOG.md
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+new file mode 100644
+index 0000000..a378d41
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -0,0 +1,12 @@
++# Changelog
++
++All notable changes to this project are documented here. The format follows
++[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
++
++## [0.1.0] - 2026-08-07
++
++### Added
++- Placing, reading and listing orders over the HTTP API, with scoped bearer tokens.
++- `orders.order-placed.v1` published to the `quellbrook.events` exchange.
++- PostgreSQL storage through EF Core with migrations; health checks; OpenTelemetry.
++- Container image, Kubernetes manifests, CI, CodeQL, release and deploy workflows.

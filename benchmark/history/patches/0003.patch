@@ -1,0 +1,709 @@
+From 2921ae61382fca7664a3cb32956b02c0b018acab Mon Sep 17 00:00:00 2001
+From: Pavel Strand <pavel.strand@example.invalid>
+Date: Tue, 28 Jul 2026 10:22:31 +0200
+Subject: feat(domain): Order aggregate with consignee, parcels and service
+ levels
+
+---
+ .../Common/AggregateRoot.cs                   | 13 +++
+ .../Common/DomainException.cs                 | 19 ++++
+ .../Common/IDomainEvent.cs                    |  7 ++
+ src/Quellbrook.Orders.Domain/Common/Text.cs   | 21 ++++
+ .../Orders/Address.cs                         | 45 +++++++++
+ .../Orders/Consignee.cs                       | 27 +++++
+ .../Orders/ContactDetails.cs                  | 25 +++++
+ .../Orders/CustomerAccountId.cs               | 27 +++++
+ .../Orders/Dimensions.cs                      | 35 +++++++
+ .../Orders/Events/OrderPlaced.cs              |  5 +
+ .../Orders/IOrderRepository.cs                | 10 ++
+ src/Quellbrook.Orders.Domain/Orders/Order.cs  | 99 +++++++++++++++++++
+ .../Orders/OrderId.cs                         |  6 ++
+ .../Orders/OrderStatus.cs                     |  7 ++
+ src/Quellbrook.Orders.Domain/Orders/Parcel.cs | 23 +++++
+ .../Orders/ParcelSpecification.cs             |  4 +
+ .../Orders/ServiceLevel.cs                    | 10 ++
+ .../Domain/OrderTests.cs                      | 61 ++++++++++++
+ .../Domain/ValueObjectTests.cs                | 60 +++++++++++
+ .../TestSupport/OrderData.cs                  | 36 +++++++
+ 20 files changed, 540 insertions(+)
+ create mode 100644 src/Quellbrook.Orders.Domain/Common/AggregateRoot.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Common/DomainException.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Common/IDomainEvent.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Common/Text.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/Address.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/Consignee.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/ContactDetails.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/CustomerAccountId.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/Dimensions.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/Events/OrderPlaced.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/IOrderRepository.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/Order.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/OrderId.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/OrderStatus.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/Parcel.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/ParcelSpecification.cs
+ create mode 100644 src/Quellbrook.Orders.Domain/Orders/ServiceLevel.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/Domain/ValueObjectTests.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/TestSupport/OrderData.cs
+
+diff --git a/src/Quellbrook.Orders.Domain/Common/AggregateRoot.cs b/src/Quellbrook.Orders.Domain/Common/AggregateRoot.cs
+new file mode 100644
+index 0000000..5993ceb
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Common/AggregateRoot.cs
+@@ -0,0 +1,13 @@
++namespace Quellbrook.Orders.Domain.Common;
++
++/// <summary>Base of every aggregate root: collects the domain events raised by one unit of work.</summary>
++public abstract class AggregateRoot
++{
++    private readonly List<IDomainEvent> _domainEvents = [];
++
++    public IReadOnlyList<IDomainEvent> DomainEvents => _domainEvents;
++
++    public void ClearDomainEvents() => _domainEvents.Clear();
++
++    protected void Raise(IDomainEvent domainEvent) => _domainEvents.Add(domainEvent);
++}
+diff --git a/src/Quellbrook.Orders.Domain/Common/DomainException.cs b/src/Quellbrook.Orders.Domain/Common/DomainException.cs
+new file mode 100644
+index 0000000..a8fb3a9
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Common/DomainException.cs
+@@ -0,0 +1,19 @@
++namespace Quellbrook.Orders.Domain.Common;
++
++/// <summary>A business rule was broken; the message is safe to show to the caller.</summary>
++public sealed class DomainException : Exception
++{
++    public DomainException()
++    {
++    }
++
++    public DomainException(string message)
++        : base(message)
++    {
++    }
++
++    public DomainException(string message, Exception innerException)
++        : base(message, innerException)
++    {
++    }
++}
+diff --git a/src/Quellbrook.Orders.Domain/Common/IDomainEvent.cs b/src/Quellbrook.Orders.Domain/Common/IDomainEvent.cs
+new file mode 100644
+index 0000000..06cf09a
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Common/IDomainEvent.cs
+@@ -0,0 +1,7 @@
++namespace Quellbrook.Orders.Domain.Common;
++
++/// <summary>Something that happened to an aggregate, in the past tense.</summary>
++public interface IDomainEvent
++{
++    DateTimeOffset OccurredAt { get; }
++}
+diff --git a/src/Quellbrook.Orders.Domain/Common/Text.cs b/src/Quellbrook.Orders.Domain/Common/Text.cs
+new file mode 100644
+index 0000000..fa0074c
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Common/Text.cs
+@@ -0,0 +1,21 @@
++namespace Quellbrook.Orders.Domain.Common;
++
++/// <summary>Trimming and length rules shared by the value objects.</summary>
++internal static class Text
++{
++    public static string Required(string? value, int maxLength, string field)
++    {
++        var trimmed = value?.Trim();
++        if (string.IsNullOrEmpty(trimmed))
++        {
++            throw new DomainException($"{field} is required.");
++        }
++
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new DomainException($"{field} must be at most {maxLength} characters.");
++    }
++
++    public static string? Optional(string? value, int maxLength, string field) =>
++        string.IsNullOrWhiteSpace(value) ? null : Required(value, maxLength, field);
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/Address.cs b/src/Quellbrook.Orders.Domain/Orders/Address.cs
+new file mode 100644
+index 0000000..33ddc82
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/Address.cs
+@@ -0,0 +1,45 @@
++using Quellbrook.Orders.Domain.Common;
++
++namespace Quellbrook.Orders.Domain.Orders;
++
++/// <summary>A delivery address in one of the countries Quellbrook delivers to.</summary>
++public sealed record Address
++{
++    private static readonly HashSet<string> s_countries = new(StringComparer.Ordinal) { "DK", "SE", "NO", "DE", "NL" };
++
++    private Address(string line1, string? line2, string postalCode, string city, string countryCode)
++    {
++        Line1 = line1;
++        Line2 = line2;
++        PostalCode = postalCode;
++        City = city;
++        CountryCode = countryCode;
++    }
++
++    public string Line1 { get; }
++
++    public string? Line2 { get; }
++
++    public string PostalCode { get; }
++
++    public string City { get; }
++
++    /// <summary>ISO 3166-1 alpha-2.</summary>
++    public string CountryCode { get; }
++
++    public static Address Create(string line1, string? line2, string postalCode, string city, string countryCode)
++    {
++        var country = Text.Required(countryCode, 2, nameof(countryCode)).ToUpperInvariant();
++        if (!s_countries.Contains(country))
++        {
++            throw new DomainException($"Quellbrook does not deliver to '{country}'.");
++        }
++
++        return new Address(
++            Text.Required(line1, 100, nameof(line1)),
++            Text.Optional(line2, 100, nameof(line2)),
++            Text.Required(postalCode, 10, nameof(postalCode)).ToUpperInvariant(),
++            Text.Required(city, 60, nameof(city)),
++            country);
++    }
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/Consignee.cs b/src/Quellbrook.Orders.Domain/Orders/Consignee.cs
+new file mode 100644
+index 0000000..48fd61f
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/Consignee.cs
+@@ -0,0 +1,27 @@
++using Quellbrook.Orders.Domain.Common;
++
++namespace Quellbrook.Orders.Domain.Orders;
++
++/// <summary>The person or business the parcels are delivered to.</summary>
++public sealed record Consignee
++{
++    private Consignee(string name, Address address, ContactDetails contact)
++    {
++        Name = name;
++        Address = address;
++        Contact = contact;
++    }
++
++    public string Name { get; }
++
++    public Address Address { get; }
++
++    public ContactDetails Contact { get; }
++
++    public static Consignee Create(string name, Address address, ContactDetails contact)
++    {
++        ArgumentNullException.ThrowIfNull(address);
++        ArgumentNullException.ThrowIfNull(contact);
++        return new Consignee(Text.Required(name, 100, nameof(name)), address, contact);
++    }
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/ContactDetails.cs b/src/Quellbrook.Orders.Domain/Orders/ContactDetails.cs
+new file mode 100644
+index 0000000..5d3727c
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/ContactDetails.cs
+@@ -0,0 +1,25 @@
++using Quellbrook.Orders.Domain.Common;
++
++namespace Quellbrook.Orders.Domain.Orders;
++
++/// <summary>
++/// How the consignee can be told about the delivery. Both parts are optional: a consignee without contact details
++/// simply receives no notifications.
++/// </summary>
++public sealed record ContactDetails
++{
++    public static readonly ContactDetails None = new(null, null);
++
++    private ContactDetails(string? email, string? phone)
++    {
++        Email = email;
++        Phone = phone;
++    }
++
++    public string? Email { get; }
++
++    public string? Phone { get; }
++
++    public static ContactDetails Create(string? email, string? phone) =>
++        new(Text.Optional(email, 254, nameof(email)), Text.Optional(phone, 20, nameof(phone)));
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/CustomerAccountId.cs b/src/Quellbrook.Orders.Domain/Orders/CustomerAccountId.cs
+new file mode 100644
+index 0000000..dc382aa
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/CustomerAccountId.cs
+@@ -0,0 +1,27 @@
++using Quellbrook.Orders.Domain.Common;
++
++namespace Quellbrook.Orders.Domain.Orders;
++
++/// <summary>The shipper's customer account number: <c>QB-</c> followed by four to twelve digits.</summary>
++public sealed record CustomerAccountId
++{
++    private const string Prefix = "QB-";
++
++    private CustomerAccountId(string value) => Value = value;
++
++    public string Value { get; }
++
++    public static CustomerAccountId Parse(string value)
++    {
++        ArgumentNullException.ThrowIfNull(value);
++        var digits = value.StartsWith(Prefix, StringComparison.Ordinal) ? value.AsSpan(Prefix.Length) : [];
++        if (digits.Length is < 4 or > 12 || digits.ContainsAnyExceptInRange('0', '9'))
++        {
++            throw new DomainException($"'{value}' is not a customer account number.");
++        }
++
++        return new CustomerAccountId(value);
++    }
++
++    public override string ToString() => Value;
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/Dimensions.cs b/src/Quellbrook.Orders.Domain/Orders/Dimensions.cs
+new file mode 100644
+index 0000000..98cd2a4
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/Dimensions.cs
+@@ -0,0 +1,35 @@
++using Quellbrook.Orders.Domain.Common;
++
++namespace Quellbrook.Orders.Domain.Orders;
++
++/// <summary>Outer dimensions of a parcel in whole centimetres.</summary>
++public sealed record Dimensions
++{
++    public const int MaxSideCm = 175;
++
++    private Dimensions(int lengthCm, int widthCm, int heightCm)
++    {
++        LengthCm = lengthCm;
++        WidthCm = widthCm;
++        HeightCm = heightCm;
++    }
++
++    public int LengthCm { get; }
++
++    public int WidthCm { get; }
++
++    public int HeightCm { get; }
++
++    public static Dimensions Create(int lengthCm, int widthCm, int heightCm)
++    {
++        foreach (var side in (ReadOnlySpan<int>)[lengthCm, widthCm, heightCm])
++        {
++            if (side is < 1 or > MaxSideCm)
++            {
++                throw new DomainException($"Every side must be between 1 and {MaxSideCm} cm.");
++            }
++        }
++
++        return new Dimensions(lengthCm, widthCm, heightCm);
++    }
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/Events/OrderPlaced.cs b/src/Quellbrook.Orders.Domain/Orders/Events/OrderPlaced.cs
+new file mode 100644
+index 0000000..fd0896c
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/Events/OrderPlaced.cs
+@@ -0,0 +1,5 @@
++using Quellbrook.Orders.Domain.Common;
++
++namespace Quellbrook.Orders.Domain.Orders.Events;
++
++public sealed record OrderPlaced(OrderId OrderId, DateTimeOffset OccurredAt) : IDomainEvent;
+diff --git a/src/Quellbrook.Orders.Domain/Orders/IOrderRepository.cs b/src/Quellbrook.Orders.Domain/Orders/IOrderRepository.cs
+new file mode 100644
+index 0000000..085d138
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/IOrderRepository.cs
+@@ -0,0 +1,10 @@
++namespace Quellbrook.Orders.Domain.Orders;
++
++public interface IOrderRepository
++{
++    Task<Order?> FindAsync(OrderId id, CancellationToken cancellationToken);
++
++    void Add(Order order);
++
++    Task SaveChangesAsync(CancellationToken cancellationToken);
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/Order.cs b/src/Quellbrook.Orders.Domain/Orders/Order.cs
+new file mode 100644
+index 0000000..de0182f
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/Order.cs
+@@ -0,0 +1,99 @@
++using Quellbrook.Orders.Domain.Common;
++using Quellbrook.Orders.Domain.Orders.Events;
++
++namespace Quellbrook.Orders.Domain.Orders;
++
++/// <summary>A shipper's order to collect and deliver one or more parcels to one consignee.</summary>
++public sealed class Order : AggregateRoot
++{
++    public const int MaxParcels = 20;
++    public const int MaxExpressParcels = 5;
++    public const int MaxParcelWeightGrams = 31_500;
++
++    private readonly List<Parcel> _parcels;
++
++    private Order(
++        OrderId id,
++        CustomerAccountId customer,
++        Consignee consignee,
++        ServiceLevel serviceLevel,
++        List<Parcel> parcels,
++        string placedBy,
++        DateTimeOffset placedAt)
++    {
++        Id = id;
++        Customer = customer;
++        Consignee = consignee;
++        ServiceLevel = serviceLevel;
++        _parcels = parcels;
++        PlacedBy = placedBy;
++        PlacedAt = placedAt;
++        Status = OrderStatus.Placed;
++    }
++
++    public OrderId Id { get; }
++
++    public CustomerAccountId Customer { get; }
++
++    public Consignee Consignee { get; }
++
++    public ServiceLevel ServiceLevel { get; }
++
++    public IReadOnlyList<Parcel> Parcels => _parcels;
++
++    public OrderStatus Status { get; private set; }
++
++    /// <summary>The operator who placed the order on the shipper's behalf.</summary>
++    public string PlacedBy { get; }
++
++    public DateTimeOffset PlacedAt { get; }
++
++    public int TotalWeightGrams => _parcels.Sum(parcel => parcel.WeightGrams);
++
++    public static Order Place(
++        OrderId id,
++        CustomerAccountId customer,
++        Consignee consignee,
++        ServiceLevel serviceLevel,
++        IReadOnlyList<ParcelSpecification> parcels,
++        string placedBy,
++        DateTimeOffset placedAt)
++    {
++        ArgumentNullException.ThrowIfNull(customer);
++        ArgumentNullException.ThrowIfNull(consignee);
++        ArgumentNullException.ThrowIfNull(parcels);
++        ArgumentException.ThrowIfNullOrWhiteSpace(placedBy);
++        EnsureParcelsAllowed(serviceLevel, parcels);
++
++        var numbered = parcels.Select((specification, index) => Parcel.Create(index + 1, specification)).ToList();
++        var order = new Order(id, customer, consignee, serviceLevel, numbered, placedBy, placedAt);
++        order.Raise(new OrderPlaced(id, placedAt));
++        return order;
++    }
++
++    /// <summary>Rebuilds an order from storage; raises no events.</summary>
++    public static Order Restore(
++        OrderId id,
++        CustomerAccountId customer,
++        Consignee consignee,
++        ServiceLevel serviceLevel,
++        IEnumerable<Parcel> parcels,
++        OrderStatus status,
++        string placedBy,
++        DateTimeOffset placedAt) =>
++        new(id, customer, consignee, serviceLevel, [.. parcels], placedBy, placedAt) { Status = status };
++
++    private static void EnsureParcelsAllowed(ServiceLevel serviceLevel, IReadOnlyList<ParcelSpecification> parcels)
++    {
++        var limit = serviceLevel == ServiceLevel.Express ? MaxExpressParcels : MaxParcels;
++        if (parcels.Count == 0 || parcels.Count > limit)
++        {
++            throw new DomainException($"A {serviceLevel.ToString().ToLowerInvariant()} order has 1 to {limit} parcels.");
++        }
++
++        if (parcels.Any(parcel => parcel.WeightGrams is < 1 or > MaxParcelWeightGrams))
++        {
++            throw new DomainException($"A parcel weighs between 1 g and {MaxParcelWeightGrams} g.");
++        }
++    }
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/OrderId.cs b/src/Quellbrook.Orders.Domain/Orders/OrderId.cs
+new file mode 100644
+index 0000000..1dbb9d3
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/OrderId.cs
+@@ -0,0 +1,6 @@
++namespace Quellbrook.Orders.Domain.Orders;
++
++public readonly record struct OrderId(Guid Value)
++{
++    public override string ToString() => Value.ToString();
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/OrderStatus.cs b/src/Quellbrook.Orders.Domain/Orders/OrderStatus.cs
+new file mode 100644
+index 0000000..e7f5e25
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/OrderStatus.cs
+@@ -0,0 +1,7 @@
++namespace Quellbrook.Orders.Domain.Orders;
++
++public enum OrderStatus
++{
++    Placed = 0,
++    Cancelled = 1,
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/Parcel.cs b/src/Quellbrook.Orders.Domain/Orders/Parcel.cs
+new file mode 100644
+index 0000000..867c5c1
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/Parcel.cs
+@@ -0,0 +1,23 @@
++namespace Quellbrook.Orders.Domain.Orders;
++
++/// <summary>One physical parcel of an order, numbered from 1 within the order.</summary>
++public sealed class Parcel
++{
++    private Parcel(int number, int weightGrams, Dimensions dimensions)
++    {
++        Number = number;
++        WeightGrams = weightGrams;
++        Dimensions = dimensions;
++    }
++
++    public int Number { get; }
++
++    public int WeightGrams { get; set; }
++
++    public Dimensions Dimensions { get; set; }
++
++    public static Parcel Restore(int number, int weightGrams, Dimensions dimensions) => new(number, weightGrams, dimensions);
++
++    internal static Parcel Create(int number, ParcelSpecification specification) =>
++        new(number, specification.WeightGrams, specification.Dimensions);
++}
+diff --git a/src/Quellbrook.Orders.Domain/Orders/ParcelSpecification.cs b/src/Quellbrook.Orders.Domain/Orders/ParcelSpecification.cs
+new file mode 100644
+index 0000000..c0c22c8
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/ParcelSpecification.cs
+@@ -0,0 +1,4 @@
++namespace Quellbrook.Orders.Domain.Orders;
++
++/// <summary>What the shipper declares about a parcel when placing an order.</summary>
++public sealed record ParcelSpecification(int WeightGrams, Dimensions Dimensions);
+diff --git a/src/Quellbrook.Orders.Domain/Orders/ServiceLevel.cs b/src/Quellbrook.Orders.Domain/Orders/ServiceLevel.cs
+new file mode 100644
+index 0000000..f070777
+--- /dev/null
++++ b/src/Quellbrook.Orders.Domain/Orders/ServiceLevel.cs
+@@ -0,0 +1,10 @@
++namespace Quellbrook.Orders.Domain.Orders;
++
++public enum ServiceLevel
++{
++    /// <summary>Delivered on a planned route, normally the next working day.</summary>
++    Standard = 0,
++
++    /// <summary>Delivered the same day when placed before the dispatch cut-off.</summary>
++    Express = 1,
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs b/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs
+new file mode 100644
+index 0000000..68aacf6
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs
+@@ -0,0 +1,61 @@
++using Quellbrook.Orders.Domain.Common;
++using Quellbrook.Orders.Domain.Orders;
++using Quellbrook.Orders.Domain.Orders.Events;
++using Quellbrook.Orders.UnitTests.TestSupport;
++
++namespace Quellbrook.Orders.UnitTests.Domain;
++
++public sealed class OrderTests
++{
++    [Fact]
++    public void PlacingAnOrderNumbersItsParcelsAndRaisesOrderPlaced()
++    {
++        var order = OrderData.Placed(parcels: 3);
++
++        Assert.Equal(OrderStatus.Placed, order.Status);
++        Assert.Equal([1, 2, 3], order.Parcels.Select(parcel => parcel.Number));
++        Assert.Equal(7_200, order.TotalWeightGrams);
++        var placed = Assert.IsType<OrderPlaced>(Assert.Single(order.DomainEvents));
++        Assert.Equal(order.Id, placed.OrderId);
++        Assert.Equal(OrderData.PlacedAt, placed.OccurredAt);
++    }
++
++    [Fact]
++    public void AnOrderNeedsAtLeastOneParcel()
++    {
++        var exception = Assert.Throws<DomainException>(() => Order.Place(
++            new OrderId(Guid.NewGuid()), CustomerAccountId.Parse("QB-104233"), OrderData.ConsigneeInAarhus(),
++            ServiceLevel.Standard, [], "operator-17", OrderData.PlacedAt));
++
++        Assert.Contains("1 to 20 parcels", exception.Message, StringComparison.Ordinal);
++    }
++
++    [Fact]
++    public void AnExpressOrderTakesAtMostFiveParcels()
++    {
++        Assert.Throws<DomainException>(() => OrderData.Placed(ServiceLevel.Express, parcels: 6));
++        Assert.Equal(5, OrderData.Placed(ServiceLevel.Express, parcels: 5).Parcels.Count);
++    }
++
++    [Theory]
++    [InlineData(0)]
++    [InlineData(31_501)]
++    public void AParcelWeightOutsideTheLimitsIsRefused(int weightGrams)
++    {
++        Assert.Throws<DomainException>(() => Order.Place(
++            new OrderId(Guid.NewGuid()), CustomerAccountId.Parse("QB-104233"), OrderData.ConsigneeInAarhus(),
++            ServiceLevel.Standard, [OrderData.Parcel(weightGrams)], "operator-17", OrderData.PlacedAt));
++    }
++
++    [Fact]
++    public void ARestoredOrderRaisesNoEvents()
++    {
++        var placed = OrderData.Placed();
++
++        var restored = Order.Restore(placed.Id, placed.Customer, placed.Consignee, placed.ServiceLevel, placed.Parcels,
++            placed.Status, placed.PlacedBy, placed.PlacedAt);
++
++        Assert.Empty(restored.DomainEvents);
++        Assert.Equal(placed.TotalWeightGrams, restored.TotalWeightGrams);
++    }
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/Domain/ValueObjectTests.cs b/tests/Quellbrook.Orders.UnitTests/Domain/ValueObjectTests.cs
+new file mode 100644
+index 0000000..2679e92
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/Domain/ValueObjectTests.cs
+@@ -0,0 +1,60 @@
++using Quellbrook.Orders.Domain.Common;
++using Quellbrook.Orders.Domain.Orders;
++
++namespace Quellbrook.Orders.UnitTests.Domain;
++
++public sealed class ValueObjectTests
++{
++    [Theory]
++    [InlineData("QB-1042")]
++    [InlineData("QB-104233891234")]
++    public void CustomerAccountNumbersHaveFourToTwelveDigits(string value) =>
++        Assert.Equal(value, CustomerAccountId.Parse(value).Value);
++
++    [Theory]
++    [InlineData("QB-104")]
++    [InlineData("QB-1042338912345")]
++    [InlineData("XX-104233")]
++    [InlineData("QB-10A233")]
++    [InlineData("")]
++    public void AnythingElseIsNotACustomerAccountNumber(string value) =>
++        Assert.Throws<DomainException>(() => CustomerAccountId.Parse(value));
++
++    [Fact]
++    public void AddressesAreTrimmedAndNormalised()
++    {
++        var address = Address.Create("  Søndergade 12 ", " ", "8000", "Aarhus C", "dk");
++
++        Assert.Equal("Søndergade 12", address.Line1);
++        Assert.Null(address.Line2);
++        Assert.Equal("DK", address.CountryCode);
++    }
++
++    [Fact]
++    public void QuellbrookDeliversOnlyToItsCountries() =>
++        Assert.Throws<DomainException>(() => Address.Create("Main Street 1", null, "10001", "New York", "US"));
++
++    [Fact]
++    public void AMissingCityIsRefused() =>
++        Assert.Throws<DomainException>(() => Address.Create("Søndergade 12", null, "8000", " ", "DK"));
++
++    [Fact]
++    public void OverlongTextIsRefused() =>
++        Assert.Throws<DomainException>(() => Address.Create(new string('x', 101), null, "8000", "Aarhus C", "DK"));
++
++    [Theory]
++    [InlineData(0, 10, 10)]
++    [InlineData(10, 176, 10)]
++    public void EverySideOfAParcelIsBetween1And175Cm(int length, int width, int height) =>
++        Assert.Throws<DomainException>(() => Dimensions.Create(length, width, height));
++
++    [Fact]
++    public void ContactDetailsAreOptional()
++    {
++        var contact = ContactDetails.Create(" ", null);
++
++        Assert.Null(contact.Email);
++        Assert.Null(contact.Phone);
++        Assert.Equal(ContactDetails.None, contact);
++    }
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/TestSupport/OrderData.cs b/tests/Quellbrook.Orders.UnitTests/TestSupport/OrderData.cs
+new file mode 100644
+index 0000000..fcabf93
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/TestSupport/OrderData.cs
+@@ -0,0 +1,36 @@
++using Quellbrook.Orders.Application.PlaceOrder;
++using Quellbrook.Orders.Domain.Orders;
++
++namespace Quellbrook.Orders.UnitTests.TestSupport;
++
++internal static class OrderData
++{
++    public static readonly DateTimeOffset PlacedAt = new(2026, 7, 28, 9, 30, 0, TimeSpan.Zero);
++
++    public static Consignee ConsigneeInAarhus() =>
++        Consignee.Create(
++            "Halden Bikes ApS",
++            Address.Create("Søndergade 12", null, "8000", "Aarhus C", "DK"),
++            ContactDetails.Create("orders@halden-bikes.example", "+4520304050"));
++
++    public static ParcelSpecification Parcel(int weightGrams = 2_400) =>
++        new(weightGrams, Dimensions.Create(40, 30, 20));
++
++    public static Order Placed(ServiceLevel serviceLevel = ServiceLevel.Standard, int parcels = 2) =>
++        Order.Place(
++            new OrderId(Guid.Parse("0198f1a2-0000-7000-8000-000000000001")),
++            CustomerAccountId.Parse("QB-104233"),
++            ConsigneeInAarhus(),
++            serviceLevel,
++            [.. Enumerable.Range(0, parcels).Select(_ => Parcel())],
++            "operator-17",
++            PlacedAt);
++
++    public static PlaceOrderCommand Command(string serviceLevel = "standard", int parcels = 1) =>
++        new(
++            "QB-104233",
++            serviceLevel,
++            new ConsigneeInput("Halden Bikes ApS", "Søndergade 12", null, "8000", "Aarhus C", "dk", "orders@halden-bikes.example", null),
++            [.. Enumerable.Range(0, parcels).Select(_ => new ParcelInput(2_400, 40, 30, 20))],
++            "operator-17");
++}

@@ -66,3 +66,19 @@
   positive: none of them is an event; TRP-002 caught, the rest land on clean files).
 - Key changes: traps TRP-009..TRP-011 (above). Bands out: C4 retention 100 vs [0, 60] (the outbox purge is credited
   as retention for all personal data although orders themselves are kept indefinitely; band kept), D42 80 vs [0, 40].
+
+## 2026-10-07 — scan iteration 2 (contained, local) and history packaging
+
+- Contained pass at `ef5a40b`: 26 results. The D4, ED5 and D8 rows of iteration 1 are gone after the fixes. Recall
+  0/2 (ORD-001 false negative; ORD-002 only as the location-less roll-up, now "11/13": the new
+  `EndpointResults.ForOperatorAsync` takes no token because it does no I/O of its own — the delegate it runs carries
+  the request's token — so that part of the roll-up is noise). Trap resistance 7/11: TRP-002 (ED3), TRP-007 (D17),
+  TRP-009 (D18), TRP-010 (DS-0026), TRP-011 (D39) caught, as judged in iteration 1.
+- New row, judged: DM2 "Primitive id on a domain type: Order.RequestKey" — **false-positive**: the idempotency key is
+  the caller's opaque string, not an identifier of the order or of anything in the domain. Code kept; promoted to
+  trap TRP-012.
+- Every release tag was checked out in a throw-away worktree and built in locked-restore mode with its tests run:
+  `v0.1.0` 30 + 12, `v0.2.0` 41 + 14, `v0.3.0` 56 + 17 tests, all green.
+- `benchmark/history/`: 26 patches, `build-history.sh` (rebuilds the scripted part on top of the key-first commit and
+  verifies the final commit id and the three tag targets; verified by running it into a fresh directory) and a
+  README listing every commit by sprint with the story notes.

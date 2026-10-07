@@ -134,6 +134,17 @@
       "rationale": "OrderRecordConfiguration.Configure is EF Core's fluent mapping of one table: a flat sequence of declarative calls with no branches. Its IL size grows with the number of columns, not with any logic a reader has to follow."
     },
     {
+      "id": "TRP-012",
+      "label": "must-not-fire",
+      "concept": "primitive-entity-identifier",
+      "file": "src/Quellbrook.Orders.Domain/Orders/Order.cs",
+      "lines": [
+        57,
+        57
+      ],
+      "rationale": "Order.RequestKey is the caller's opaque idempotency key for the request that placed the order, not an identifier of the order or of any domain object; nothing references an order by it except the duplicate check. Wrapping a pass-through string in a strongly typed id would add nothing."
+    },
+    {
       "id": "TRP-008",
       "label": "must-not-fire",
       "concept": "cleartext-transmission",
@@ -449,46 +460,242 @@
       "id": "CLN-019",
       "label": "clean",
       "concepts": "*",
-      "file": "benchmark/journal.md",
+      "file": "benchmark/history/README.md",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
       "id": "CLN-020",
       "label": "clean",
       "concepts": "*",
-      "file": "catalog-info.yaml",
+      "file": "benchmark/history/build-history.sh",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
       "id": "CLN-021",
       "label": "clean",
       "concepts": "*",
-      "file": "contracts/asyncapi.yaml",
+      "file": "benchmark/history/patches/0001.patch",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
       "id": "CLN-022",
       "label": "clean",
       "concepts": "*",
-      "file": "contracts/events/order-cancelled.v1.schema.json",
+      "file": "benchmark/history/patches/0002.patch",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
       "id": "CLN-023",
       "label": "clean",
       "concepts": "*",
-      "file": "contracts/events/order-placed.v1.schema.json",
+      "file": "benchmark/history/patches/0003.patch",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
       "id": "CLN-024",
       "label": "clean",
       "concepts": "*",
-      "file": "contracts/openapi.yaml",
+      "file": "benchmark/history/patches/0004.patch",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
       "id": "CLN-025",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0005.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-026",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0006.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-027",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0007.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-028",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0008.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-029",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0009.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-030",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0010.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-031",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0011.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-032",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0012.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-033",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0013.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-034",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0014.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-035",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0015.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-036",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0016.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-037",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0017.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-038",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0018.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-039",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0019.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-040",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0020.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-041",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0021.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-042",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0022.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-043",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0023.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-044",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0024.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-045",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0025.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-046",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/history/patches/0026.patch",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-047",
+      "label": "clean",
+      "concepts": "*",
+      "file": "benchmark/journal.md",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-048",
+      "label": "clean",
+      "concepts": "*",
+      "file": "catalog-info.yaml",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-049",
+      "label": "clean",
+      "concepts": "*",
+      "file": "contracts/asyncapi.yaml",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-050",
+      "label": "clean",
+      "concepts": "*",
+      "file": "contracts/events/order-cancelled.v1.schema.json",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-051",
+      "label": "clean",
+      "concepts": "*",
+      "file": "contracts/events/order-placed.v1.schema.json",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-052",
+      "label": "clean",
+      "concepts": "*",
+      "file": "contracts/openapi.yaml",
+      "rationale": "No planted defect: certified clean for every concept."
+    },
+    {
+      "id": "CLN-053",
       "label": "clean",
       "concepts": [
         "committed-private-key",
@@ -666,105 +873,105 @@
       "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-026",
+      "id": "CLN-054",
       "label": "clean",
       "concepts": "*",
       "file": "deploy/k8s/external-secret.yaml",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-027",
+      "id": "CLN-055",
       "label": "clean",
       "concepts": "*",
       "file": "deploy/k8s/namespace.yaml",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-028",
+      "id": "CLN-056",
       "label": "clean",
       "concepts": "*",
       "file": "deploy/k8s/networkpolicy.yaml",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-029",
+      "id": "CLN-057",
       "label": "clean",
       "concepts": "*",
       "file": "deploy/k8s/service.yaml",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-030",
+      "id": "CLN-058",
       "label": "clean",
       "concepts": "*",
       "file": "docs/adr/0001-record-architecture-decisions.md",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-031",
+      "id": "CLN-059",
       "label": "clean",
       "concepts": "*",
       "file": "docs/adr/0002-layered-domain-model.md",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-032",
+      "id": "CLN-060",
       "label": "clean",
       "concepts": "*",
       "file": "docs/adr/0003-transactional-outbox.md",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-033",
+      "id": "CLN-061",
       "label": "clean",
       "concepts": "*",
       "file": "docs/adr/0004-versioned-event-contracts.md",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-034",
+      "id": "CLN-062",
       "label": "clean",
       "concepts": "*",
       "file": "docs/architecture.md",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-035",
+      "id": "CLN-063",
       "label": "clean",
       "concepts": "*",
       "file": "docs/privacy.md",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-036",
+      "id": "CLN-064",
       "label": "clean",
       "concepts": "*",
       "file": "global.json",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-037",
+      "id": "CLN-065",
       "label": "clean",
       "concepts": "*",
       "file": "src/.editorconfig",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-038",
+      "id": "CLN-066",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Contracts/CancelOrderRequest.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-039",
+      "id": "CLN-067",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Contracts/OrderResponse.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-040",
+      "id": "CLN-068",
       "label": "clean",
       "concepts": [
         "hardcoded-credential",
@@ -945,14 +1152,14 @@
       "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-041",
+      "id": "CLN-069",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Contracts/RequestErrors.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-042",
+      "id": "CLN-070",
       "label": "clean",
       "concepts": [
         "hardcoded-credential",
@@ -1132,105 +1339,105 @@
       "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-043",
+      "id": "CLN-071",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Endpoints/EndpointResults.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-044",
+      "id": "CLN-072",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Endpoints/OrderEndpoints.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-045",
+      "id": "CLN-073",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Hosting/ApiPipeline.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-046",
+      "id": "CLN-074",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Hosting/ApiServices.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-047",
+      "id": "CLN-075",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Program.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-048",
+      "id": "CLN-076",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Properties/launchSettings.json",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-049",
+      "id": "CLN-077",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Quellbrook.Orders.Api.csproj",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-050",
+      "id": "CLN-078",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Security/AuthorizationPolicies.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-051",
+      "id": "CLN-079",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Security/ConfigureJwtBearerOptions.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-052",
+      "id": "CLN-080",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Security/IdempotencyKey.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-053",
+      "id": "CLN-081",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Security/JwtAuthenticationOptions.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-054",
+      "id": "CLN-082",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Security/OperatorHeader.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-055",
+      "id": "CLN-083",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Security/ScopeClaims.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-056",
+      "id": "CLN-084",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/Security/SecurityHeadersMiddleware.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-057",
+      "id": "CLN-085",
       "label": "clean",
       "concepts": [
         "hardcoded-credential",
@@ -1411,63 +1618,63 @@
       "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-058",
+      "id": "CLN-086",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/appsettings.json",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-059",
+      "id": "CLN-087",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Api/packages.lock.json",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-060",
+      "id": "CLN-088",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/ApplicationServiceCollectionExtensions.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-061",
+      "id": "CLN-089",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/CancelOrder/CancelOrderCommand.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-062",
+      "id": "CLN-090",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/CancelOrder/CancelOrderHandler.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-063",
+      "id": "CLN-091",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/IntegrationMessage.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-064",
+      "id": "CLN-092",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/OperationResult.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-065",
+      "id": "CLN-093",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/OrderContractMapper.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-066",
+      "id": "CLN-094",
       "label": "clean",
       "concepts": [
         "hardcoded-credential",
@@ -1648,49 +1855,49 @@
       "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-067",
+      "id": "CLN-095",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-068",
+      "id": "CLN-096",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/Quellbrook.Orders.Application.csproj",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-069",
+      "id": "CLN-097",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/Queries/IOrderQueries.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-070",
+      "id": "CLN-098",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/Queries/OrderViews.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-071",
+      "id": "CLN-099",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Application/packages.lock.json",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-072",
+      "id": "CLN-100",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderCancelledV1.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-073",
+      "id": "CLN-101",
       "label": "clean",
       "concepts": [
         "hardcoded-credential",
@@ -1871,133 +2078,307 @@
       "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-074",
+      "id": "CLN-102",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Contracts/Quellbrook.Orders.Contracts.csproj",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-075",
+      "id": "CLN-103",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Contracts/packages.lock.json",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-076",
+      "id": "CLN-104",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Common/AggregateRoot.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-077",
+      "id": "CLN-105",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Common/DomainException.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-078",
+      "id": "CLN-106",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Common/IDomainEvent.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-079",
+      "id": "CLN-107",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Common/Text.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-080",
+      "id": "CLN-108",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/Address.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-081",
+      "id": "CLN-109",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/Cancellation.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-082",
+      "id": "CLN-110",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/Consignee.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-083",
+      "id": "CLN-111",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/ContactDetails.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-084",
+      "id": "CLN-112",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/CustomerAccountId.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-085",
+      "id": "CLN-113",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/Dimensions.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-086",
+      "id": "CLN-114",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/Events/OrderCancelled.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-087",
+      "id": "CLN-115",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/Events/OrderPlaced.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-088",
+      "id": "CLN-116",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/IOrderRepository.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-089",
+      "id": "CLN-117",
       "label": "clean",
-      "concepts": "*",
+      "concepts": [
+        "hardcoded-credential",
+        "hardcoded-password",
+        "hardcoded-cryptographic-key",
+        "committed-private-key",
+        "secret-in-version-history",
+        "sql-injection",
+        "nosql-injection",
+        "command-injection",
+        "code-injection",
+        "path-traversal",
+        "xml-external-entity",
+        "insecure-deserialization",
+        "cross-site-scripting",
+        "regex-denial-of-service",
+        "ldap-injection",
+        "xpath-injection",
+        "server-side-request-forgery",
+        "open-redirect",
+        "weak-cryptographic-algorithm",
+        "weak-hash-algorithm",
+        "insufficient-password-hashing",
+        "insecure-randomness",
+        "cleartext-transmission",
+        "missing-authorization",
+        "mass-assignment",
+        "error-information-exposure",
+        "improper-certificate-validation",
+        "token-signature-or-expiry-not-validated",
+        "prototype-pollution",
+        "log-injection",
+        "sensitive-data-in-logs",
+        "sensitive-data-in-url",
+        "sensitive-data-in-browser-storage",
+        "sensitive-data-in-token-payload",
+        "unbounded-allocation-from-untrusted-length",
+        "uncontrolled-recursion",
+        "ci-workflow-injection",
+        "ci-secret-exposure",
+        "secret-in-process-arguments",
+        "ci-token-excessive-permissions",
+        "unpinned-ci-action",
+        "download-without-integrity-check",
+        "missing-subresource-integrity",
+        "container-excessive-privilege",
+        "container-runs-as-root",
+        "privileged-container",
+        "host-namespace-sharing",
+        "host-path-mount",
+        "container-privilege-escalation-allowed",
+        "container-excess-capabilities",
+        "container-writable-root-filesystem",
+        "container-confinement-profile-unset",
+        "container-security-context-missing",
+        "container-missing-resource-limits",
+        "mutable-image-reference",
+        "iac-misconfiguration",
+        "missing-health-probes",
+        "missing-image-healthcheck",
+        "automounted-service-account-token",
+        "overly-permissive-rbac",
+        "image-not-from-allowed-registry",
+        "container-missing-resource-requests",
+        "vulnerable-dependency",
+        "malicious-dependency",
+        "end-of-life-platform",
+        "outdated-dependency",
+        "deprecated-dependency",
+        "prerelease-dependency",
+        "license-policy-violation",
+        "dependency-release-cooldown-missing",
+        "unused-dependency",
+        "undeclared-dependency",
+        "misplaced-dev-dependency",
+        "insecure-cookie-flags",
+        "high-cyclomatic-complexity",
+        "high-cognitive-complexity",
+        "god-class",
+        "oversized-source-file",
+        "long-method",
+        "duplicated-code",
+        "technical-debt-marker",
+        "suppressed-diagnostic",
+        "commented-out-code",
+        "unused-code",
+        "obsolete-symbol-still-used",
+        "unreachable-code",
+        "not-implemented-placeholder",
+        "incomplete-implementation",
+        "empty-catch-block",
+        "pointless-catch-rethrow",
+        "rethrow-resets-stack-trace",
+        "blocking-on-async-code",
+        "async-void-method",
+        "floating-promise",
+        "missing-cancellation-propagation",
+        "non-structured-log-message",
+        "null-forgiving-suppression",
+        "null-dereference",
+        "hand-rolled-structured-format-parsing",
+        "silent-error-fallback",
+        "js-interop-contract-mismatch",
+        "redundant-condition-operand",
+        "undrained-child-process-stream",
+        "unbounded-truncation-loop",
+        "improper-resource-disposal",
+        "unrestored-process-global-state",
+        "argument-guard-tests-wrong-condition",
+        "side-effect-in-conditional-guard",
+        "lock-release-state-mismatch",
+        "unguarded-expensive-debug-logging",
+        "inert-configuration-option",
+        "unsynchronized-callback-handoff",
+        "collection-modified-during-enumeration",
+        "index-access-outside-bounds-guard",
+        "loop-decision-on-fixed-element",
+        "contradictory-support-guard",
+        "test-only-api-in-production-code",
+        "type-lookup-by-simple-name",
+        "missing-configure-await",
+        "unchecked-any-external-data",
+        "module-dependency-cycle",
+        "layer-dependency-violation",
+        "boundary-type-leakage",
+        "captive-dependency",
+        "unsynchronized-shared-state",
+        "fat-interface",
+        "cross-slice-coupling",
+        "production-depends-on-test-code",
+        "query-with-side-effects",
+        "cross-aggregate-object-reference",
+        "integration-event-leaks-domain-type",
+        "anemic-domain-model",
+        "publicly-mutable-entity-state",
+        "domain-depends-on-infrastructure",
+        "repository-for-non-aggregate",
+        "scattered-domain-rule",
+        "multi-aggregate-transaction",
+        "constructible-invalid-entity",
+        "ambient-nondeterminism-in-domain",
+        "synchronous-remote-call-in-event-handler",
+        "command-with-multiple-handlers",
+        "event-not-named-in-past-tense",
+        "dual-write-without-outbox",
+        "nondeterministic-event-fold",
+        "mutable-persisted-event",
+        "test-without-assertion",
+        "skipped-test-without-reason",
+        "excessive-mocking",
+        "flaky-test",
+        "test-failure-swallowed",
+        "missing-text-alternative",
+        "form-control-without-label",
+        "page-structure-violation",
+        "non-keyboard-accessible-interaction",
+        "invalid-aria-usage",
+        "visual-and-motion-safety",
+        "focus-outline-removed",
+        "motion-without-reduced-motion",
+        "form-error-not-associated",
+        "modal-focus-not-managed",
+        "autoplay-media-without-control",
+        "react-index-as-key",
+        "react-hook-missing-dependency",
+        "react-state-mutation",
+        "unauthenticated-reachable-endpoint",
+        "undocumented-api-endpoint",
+        "third-party-data-flow",
+        "unexpected-exposed-port",
+        "business-logic-in-controller",
+        "value-object-mutability",
+        "domain-event-never-handled",
+        "event-schema-change-without-upcaster",
+        "consent-not-checked"
+      ],
       "file": "src/Quellbrook.Orders.Domain/Orders/Order.cs",
-      "rationale": "No planted defect: certified clean for every concept."
+      "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-090",
+      "id": "CLN-118",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/OrderId.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-091",
+      "id": "CLN-119",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/OrderStatus.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-092",
+      "id": "CLN-120",
       "label": "clean",
       "concepts": [
         "hardcoded-credential",
@@ -2177,91 +2558,91 @@
       "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-093",
+      "id": "CLN-121",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/ParcelSpecification.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-094",
+      "id": "CLN-122",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Orders/ServiceLevel.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-095",
+      "id": "CLN-123",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/Quellbrook.Orders.Domain.csproj",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-096",
+      "id": "CLN-124",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Domain/packages.lock.json",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-097",
+      "id": "CLN-125",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-098",
+      "id": "CLN-126",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqConnectionProvider.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-099",
+      "id": "CLN-127",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqOptions.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-100",
+      "id": "CLN-128",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqPublisher.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-101",
+      "id": "CLN-129",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Outbox/IOutboxPublisher.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-102",
+      "id": "CLN-130",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Outbox/OutboxMessage.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-103",
+      "id": "CLN-131",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Outbox/OutboxMessageConfiguration.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-104",
+      "id": "CLN-132",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Outbox/OutboxOptions.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-105",
+      "id": "CLN-133",
       "label": "clean",
       "concepts": [
         "hardcoded-credential",
@@ -2442,91 +2823,91 @@
       "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-106",
+      "id": "CLN-134",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/DesignTimeDbContextFactory.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-107",
+      "id": "CLN-135",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-108",
+      "id": "CLN-136",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260729101500_InitialCreate.Designer.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-109",
+      "id": "CLN-137",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260729101500_InitialCreate.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-110",
+      "id": "CLN-138",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260813094500_AddOutboxAndCancellation.Designer.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-111",
+      "id": "CLN-139",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260813094500_AddOutboxAndCancellation.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-112",
+      "id": "CLN-140",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260826141000_OrdersStatusIndex.Designer.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-113",
+      "id": "CLN-141",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260826141000_OrdersStatusIndex.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-114",
+      "id": "CLN-142",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260902103000_OrderRequestKey.Designer.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-115",
+      "id": "CLN-143",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260902103000_OrderRequestKey.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-116",
+      "id": "CLN-144",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-117",
+      "id": "CLN-145",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-118",
+      "id": "CLN-146",
       "label": "clean",
       "concepts": [
         "hardcoded-credential",
@@ -2707,14 +3088,14 @@
       "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-119",
+      "id": "CLN-147",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-120",
+      "id": "CLN-148",
       "label": "clean",
       "concepts": [
         "hardcoded-credential",
@@ -2896,175 +3277,175 @@
       "rationale": "Certified free of every finding concept except the ones labelled on this file (and the concepts a result of those labels would restate)."
     },
     {
-      "id": "CLN-121",
+      "id": "CLN-149",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Persistence/OrdersDbContext.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-122",
+      "id": "CLN-150",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/Quellbrook.Orders.Infrastructure.csproj",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-123",
+      "id": "CLN-151",
       "label": "clean",
       "concepts": "*",
       "file": "src/Quellbrook.Orders.Infrastructure/packages.lock.json",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-124",
+      "id": "CLN-152",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.IntegrationTests/OrdersApiFactory.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-125",
+      "id": "CLN-153",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.IntegrationTests/OrdersApiTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-126",
+      "id": "CLN-154",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.IntegrationTests/PlatformTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-127",
+      "id": "CLN-155",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.IntegrationTests/Quellbrook.Orders.IntegrationTests.csproj",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-128",
+      "id": "CLN-156",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.IntegrationTests/TestTokens.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-129",
+      "id": "CLN-157",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.IntegrationTests/packages.lock.json",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-130",
+      "id": "CLN-158",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Application/CancelOrderHandlerTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-131",
+      "id": "CLN-159",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-132",
+      "id": "CLN-160",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-133",
+      "id": "CLN-161",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Domain/ValueObjectTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-134",
+      "id": "CLN-162",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Infrastructure/DesignTimeDbContextFactoryTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-135",
+      "id": "CLN-163",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Infrastructure/EfOrderRepositoryTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-136",
+      "id": "CLN-164",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Infrastructure/OrderQueriesTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-137",
+      "id": "CLN-165",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Infrastructure/OutboxRelayTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-138",
+      "id": "CLN-166",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqConnectionProviderTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-139",
+      "id": "CLN-167",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqPublisherTests.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-140",
+      "id": "CLN-168",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/Quellbrook.Orders.UnitTests.csproj",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-141",
+      "id": "CLN-169",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/TestSupport/InMemoryOrderRepository.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-142",
+      "id": "CLN-170",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/TestSupport/OrderData.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-143",
+      "id": "CLN-171",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingOutboxPublisher.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-144",
+      "id": "CLN-172",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/TestSupport/SqliteOrdersDb.cs",
       "rationale": "No planted defect: certified clean for every concept."
     },
     {
-      "id": "CLN-145",
+      "id": "CLN-173",
       "label": "clean",
       "concepts": "*",
       "file": "tests/Quellbrook.Orders.UnitTests/packages.lock.json",

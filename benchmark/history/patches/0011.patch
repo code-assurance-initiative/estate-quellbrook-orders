@@ -1,0 +1,45 @@
+From 9a85f354bc04b1367199ba5efdc1a3b2c12f57f6 Mon Sep 17 00:00:00 2001
+From: Ruth Calloway <ruth.calloway@example.invalid>
+Date: Mon, 10 Aug 2026 10:12:40 +0200
+Subject: docs: ADR 0003 transactional outbox
+
+Eleven orders placed during the broker restart on 2026-08-06 were stored but never announced.
+---
+ docs/adr/0003-transactional-outbox.md | 28 +++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+ create mode 100644 docs/adr/0003-transactional-outbox.md
+
+diff --git a/docs/adr/0003-transactional-outbox.md b/docs/adr/0003-transactional-outbox.md
+new file mode 100644
+index 0000000..9fbc777
+--- /dev/null
++++ b/docs/adr/0003-transactional-outbox.md
+@@ -0,0 +1,28 @@
++# 3. Publish events through a transactional outbox
++
++- Status: Accepted
++- Date: 2026-08-10
++- Deciders: Ruth Calloway, Pavel Strand, Odile Marchetti
++
++## Context
++
++Since 0.1.0 the place-order handler saves the order and then publishes `orders.order-placed.v1` to the broker: two
++writes to two systems with nothing tying them together. On 2026-08-06 a broker restart during a load test left
++eleven orders stored and never announced; dispatch never planned them. The reverse (an event for an order that was
++rolled back) is possible too. More events are coming (cancellation in this sprint), so the gap would widen.
++
++## Decision
++
++Events are written to an `outbox_messages` table in the same database transaction as the aggregate change that
++raised them; the repository does this when it saves. A background relay in the same process reads undispatched
++messages in order, publishes each with its stored message id and marks it dispatched. Delivery is at least once:
++a crash between publishing and marking re-publishes the message under the same id, and consumers de-duplicate on
++the AMQP `message-id` (the dispatch and notifier teams already keep inboxes).
++
++## Consequences
++
++- Positive: an order and its event are committed together or not at all; publishing survives broker outages (the
++  relay retries); handlers no longer know about the broker.
++- Negative: events reach the broker with a delay (the relay polls every two seconds); with two replicas both relays
++  may publish the same message, which is safe but doubles broker traffic for those messages; the table grows and
++  needs a retention job.

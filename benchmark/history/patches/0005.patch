@@ -1,0 +1,704 @@
+From f8a2a0faa4412772c79c1f8bbd65e10aafbfdd2b Mon Sep 17 00:00:00 2001
+From: Pavel Strand <pavel.strand@example.invalid>
+Date: Thu, 30 Jul 2026 13:31:48 +0200
+Subject: feat: place orders and publish orders.order-placed.v1
+
+---
+ .../IIntegrationEventPublisher.cs             |  8 +++
+ .../ApplicationServiceCollectionExtensions.cs | 13 ++++
+ .../OperationResult.cs                        | 23 ++++++
+ .../OrderContractMapper.cs                    | 37 ++++++++++
+ .../PlaceOrder/PlaceOrderCommand.cs           | 20 ++++++
+ .../PlaceOrder/PlaceOrderHandler.cs           | 71 +++++++++++++++++++
+ .../Queries/IOrderQueries.cs                  |  7 ++
+ .../Queries/OrderViews.cs                     | 13 ++++
+ .../IntegrationEvents/OrderPlacedV1.cs        | 24 +++++++
+ ...frastructureServiceCollectionExtensions.cs | 30 ++++++++
+ .../Messaging/RabbitMqConnectionProvider.cs   | 59 +++++++++++++++
+ .../Messaging/RabbitMqOptions.cs              | 22 ++++++
+ .../Messaging/RabbitMqPublisher.cs            | 45 ++++++++++++
+ .../Application/PlaceOrderHandlerTests.cs     | 53 ++++++++++++++
+ .../Infrastructure/OrderQueriesTests.cs       | 42 +++++++++++
+ .../Infrastructure/RabbitMqPublisherTests.cs  | 49 +++++++++++++
+ .../TestSupport/InMemoryOrderRepository.cs    | 21 ++++++
+ .../TestSupport/RecordingPublisher.cs         | 15 ++++
+ 18 files changed, 552 insertions(+)
+ create mode 100644 src/Quellbrook.Orders.Application/Abstractions/IIntegrationEventPublisher.cs
+ create mode 100644 src/Quellbrook.Orders.Application/ApplicationServiceCollectionExtensions.cs
+ create mode 100644 src/Quellbrook.Orders.Application/OperationResult.cs
+ create mode 100644 src/Quellbrook.Orders.Application/OrderContractMapper.cs
+ create mode 100644 src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs
+ create mode 100644 src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs
+ create mode 100644 src/Quellbrook.Orders.Application/Queries/IOrderQueries.cs
+ create mode 100644 src/Quellbrook.Orders.Application/Queries/OrderViews.cs
+ create mode 100644 src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderPlacedV1.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqConnectionProvider.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqOptions.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqPublisher.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/Infrastructure/OrderQueriesTests.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqPublisherTests.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/TestSupport/InMemoryOrderRepository.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingPublisher.cs
+
+diff --git a/src/Quellbrook.Orders.Application/Abstractions/IIntegrationEventPublisher.cs b/src/Quellbrook.Orders.Application/Abstractions/IIntegrationEventPublisher.cs
+new file mode 100644
+index 0000000..50f7109
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/Abstractions/IIntegrationEventPublisher.cs
+@@ -0,0 +1,8 @@
++namespace Quellbrook.Orders.Application.Abstractions;
++
++/// <summary>Publishes an integration event to the message broker.</summary>
++public interface IIntegrationEventPublisher
++{
++    Task PublishAsync<T>(Guid messageId, string eventType, T payload, CancellationToken cancellationToken)
++        where T : class;
++}
+diff --git a/src/Quellbrook.Orders.Application/ApplicationServiceCollectionExtensions.cs b/src/Quellbrook.Orders.Application/ApplicationServiceCollectionExtensions.cs
+new file mode 100644
+index 0000000..afd1665
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/ApplicationServiceCollectionExtensions.cs
+@@ -0,0 +1,13 @@
++using Microsoft.Extensions.DependencyInjection;
++using Quellbrook.Orders.Application.PlaceOrder;
++
++namespace Quellbrook.Orders.Application;
++
++public static class ApplicationServiceCollectionExtensions
++{
++    public static IServiceCollection AddOrdersApplication(this IServiceCollection services)
++    {
++        services.AddScoped<PlaceOrderHandler>();
++        return services;
++    }
++}
+diff --git a/src/Quellbrook.Orders.Application/OperationResult.cs b/src/Quellbrook.Orders.Application/OperationResult.cs
+new file mode 100644
+index 0000000..2f039cf
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/OperationResult.cs
+@@ -0,0 +1,23 @@
++namespace Quellbrook.Orders.Application;
++
++public enum OperationStatus
++{
++    Succeeded,
++    Invalid,
++    NotFound,
++    Conflict,
++}
++
++/// <summary>The outcome of a command: a value, or why there is none. Business-rule failures are results, not exceptions.</summary>
++public sealed record OperationResult<T>(OperationStatus Status, T? Value, string? Error);
++
++public static class OperationResult
++{
++    public static OperationResult<T> Succeeded<T>(T value) => new(OperationStatus.Succeeded, value, null);
++
++    public static OperationResult<T> Invalid<T>(string error) => new(OperationStatus.Invalid, default, error);
++
++    public static OperationResult<T> NotFound<T>(string error) => new(OperationStatus.NotFound, default, error);
++
++    public static OperationResult<T> Conflict<T>(string error) => new(OperationStatus.Conflict, default, error);
++}
+diff --git a/src/Quellbrook.Orders.Application/OrderContractMapper.cs b/src/Quellbrook.Orders.Application/OrderContractMapper.cs
+new file mode 100644
+index 0000000..71d51b0
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/OrderContractMapper.cs
+@@ -0,0 +1,37 @@
++using Quellbrook.Orders.Contracts.IntegrationEvents;
++using Quellbrook.Orders.Domain.Orders;
++
++namespace Quellbrook.Orders.Application;
++
++/// <summary>Maps the Order aggregate to the published contract; the domain never sees the contract types.</summary>
++public static class OrderContractMapper
++{
++    public static OrderPlacedV1 ToOrderPlaced(Order order)
++    {
++        ArgumentNullException.ThrowIfNull(order);
++        var consignee = order.Consignee;
++        var address = consignee.Address;
++        return new OrderPlacedV1(
++            order.Id.Value,
++            order.Customer.Value,
++            ServiceLevelName(order.ServiceLevel),
++            new ConsigneeV1(
++                consignee.Name,
++                new AddressV1(address.Line1, address.Line2, address.PostalCode, address.City, address.CountryCode),
++                new ContactV1(consignee.Contact.Email, consignee.Contact.Phone)),
++            [.. order.Parcels.Select(parcel => new ParcelV1(
++                parcel.Number,
++                parcel.WeightGrams,
++                parcel.Dimensions.LengthCm,
++                parcel.Dimensions.WidthCm,
++                parcel.Dimensions.HeightCm))],
++            order.PlacedAt);
++    }
++
++    public static string ServiceLevelName(ServiceLevel serviceLevel) => serviceLevel switch
++    {
++        ServiceLevel.Standard => "standard",
++        ServiceLevel.Express => "express",
++        _ => throw new ArgumentOutOfRangeException(nameof(serviceLevel), serviceLevel, null),
++    };
++}
+diff --git a/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs b/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs
+new file mode 100644
+index 0000000..036bd18
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs
+@@ -0,0 +1,20 @@
++namespace Quellbrook.Orders.Application.PlaceOrder;
++
++public sealed record PlaceOrderCommand(
++    string CustomerAccountId,
++    string ServiceLevel,
++    ConsigneeInput Consignee,
++    IReadOnlyList<ParcelInput> Parcels,
++    string Operator);
++
++public sealed record ConsigneeInput(
++    string Name,
++    string Line1,
++    string? Line2,
++    string PostalCode,
++    string City,
++    string CountryCode,
++    string? Email,
++    string? Phone);
++
++public sealed record ParcelInput(int WeightGrams, int LengthCm, int WidthCm, int HeightCm);
+diff --git a/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs b/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs
+new file mode 100644
+index 0000000..1eb9beb
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs
+@@ -0,0 +1,71 @@
++using Microsoft.Extensions.Logging;
++using Quellbrook.Orders.Application.Abstractions;
++using Quellbrook.Orders.Contracts.IntegrationEvents;
++using Quellbrook.Orders.Domain.Common;
++using Quellbrook.Orders.Domain.Orders;
++
++namespace Quellbrook.Orders.Application.PlaceOrder;
++
++public sealed partial class PlaceOrderHandler(
++    IOrderRepository orders,
++    IIntegrationEventPublisher publisher,
++    TimeProvider time,
++    ILogger<PlaceOrderHandler> logger)
++{
++    public async Task<OperationResult<OrderId>> HandleAsync(PlaceOrderCommand command, CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(command);
++        Order order;
++        try
++        {
++            order = Create(command, time.GetUtcNow());
++        }
++        catch (DomainException exception)
++        {
++            return OperationResult.Invalid<OrderId>(exception.Message);
++        }
++
++        orders.Add(order);
++        await orders.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
++        await publisher.PublishAsync(
++            Guid.CreateVersion7(order.PlacedAt),
++            OrderPlacedV1.EventType,
++            OrderContractMapper.ToOrderPlaced(order),
++            cancellationToken).ConfigureAwait(false);
++
++        LogOrderPlaced(order.Id.Value, order.Customer.Value);
++        return OperationResult.Succeeded(order.Id);
++    }
++
++    private static Order Create(PlaceOrderCommand command, DateTimeOffset now)
++    {
++        var input = command.Consignee;
++        var consignee = Consignee.Create(
++            input.Name,
++            Address.Create(input.Line1, input.Line2, input.PostalCode, input.City, input.CountryCode),
++            ContactDetails.Create(input.Email, input.Phone));
++        var parcels = command.Parcels
++            .Select(parcel => new ParcelSpecification(
++                parcel.WeightGrams,
++                Dimensions.Create(parcel.LengthCm, parcel.WidthCm, parcel.HeightCm)))
++            .ToList();
++        return Order.Place(
++            new OrderId(Guid.CreateVersion7(now)),
++            CustomerAccountId.Parse(command.CustomerAccountId),
++            consignee,
++            ParseServiceLevel(command.ServiceLevel),
++            parcels,
++            command.Operator,
++            now);
++    }
++
++    private static ServiceLevel ParseServiceLevel(string value) => value switch
++    {
++        "standard" => ServiceLevel.Standard,
++        "express" => ServiceLevel.Express,
++        _ => throw new DomainException($"'{value}' is not a service level (standard, express)."),
++    };
++
++    [LoggerMessage(Level = LogLevel.Information, Message = "Order {OrderId} placed for {CustomerAccountId}")]
++    private partial void LogOrderPlaced(Guid orderId, string customerAccountId);
++}
+diff --git a/src/Quellbrook.Orders.Application/Queries/IOrderQueries.cs b/src/Quellbrook.Orders.Application/Queries/IOrderQueries.cs
+new file mode 100644
+index 0000000..f09f455
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/Queries/IOrderQueries.cs
+@@ -0,0 +1,7 @@
++namespace Quellbrook.Orders.Application.Queries;
++
++/// <summary>The read side: lists orders without loading aggregates.</summary>
++public interface IOrderQueries
++{
++    Task<OrderPage> ListAsync(int page, int pageSize);
++}
+diff --git a/src/Quellbrook.Orders.Application/Queries/OrderViews.cs b/src/Quellbrook.Orders.Application/Queries/OrderViews.cs
+new file mode 100644
+index 0000000..6a03db3
+--- /dev/null
++++ b/src/Quellbrook.Orders.Application/Queries/OrderViews.cs
+@@ -0,0 +1,13 @@
++namespace Quellbrook.Orders.Application.Queries;
++
++public sealed record OrderSummary(
++    Guid OrderId,
++    string CustomerAccountId,
++    string ServiceLevel,
++    string Status,
++    string ConsigneeName,
++    string DestinationCity,
++    int ParcelCount,
++    DateTimeOffset PlacedAt);
++
++public sealed record OrderPage(IReadOnlyList<OrderSummary> Items, int Page, int PageSize, int TotalCount);
+diff --git a/src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderPlacedV1.cs b/src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderPlacedV1.cs
+new file mode 100644
+index 0000000..c116c86
+--- /dev/null
++++ b/src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderPlacedV1.cs
+@@ -0,0 +1,24 @@
++namespace Quellbrook.Orders.Contracts.IntegrationEvents;
++
++/// <summary>
++/// Published once per order when it is placed (routing key <c>orders.order-placed.v1</c>). Schema:
++/// contracts/events/order-placed.v1.schema.json. Fields are only ever added, never renamed or removed, within v1.
++/// </summary>
++public sealed record OrderPlacedV1(
++    Guid OrderId,
++    string CustomerAccountId,
++    string ServiceLevel,
++    ConsigneeV1 Consignee,
++    IReadOnlyList<ParcelV1> Parcels,
++    DateTimeOffset PlacedAt)
++{
++    public const string EventType = "orders.order-placed.v1";
++}
++
++public sealed record ConsigneeV1(string Name, AddressV1 Address, ContactV1 Contact);
++
++public sealed record AddressV1(string Line1, string? Line2, string PostalCode, string City, string CountryCode);
++
++public sealed record ContactV1(string? Email, string? Phone);
++
++public sealed record ParcelV1(int Number, int WeightGrams, int LengthCm, int WidthCm, int HeightCm);
+diff --git a/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs b/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs
+new file mode 100644
+index 0000000..0baa95b
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs
+@@ -0,0 +1,30 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Configuration;
++using Microsoft.Extensions.DependencyInjection;
++using Quellbrook.Orders.Application.Abstractions;
++using Quellbrook.Orders.Application.Queries;
++using Quellbrook.Orders.Domain.Orders;
++using Quellbrook.Orders.Infrastructure.Messaging;
++using Quellbrook.Orders.Infrastructure.Persistence;
++
++namespace Quellbrook.Orders.Infrastructure;
++
++public static class InfrastructureServiceCollectionExtensions
++{
++    public static IServiceCollection AddOrdersInfrastructure(this IServiceCollection services, IConfiguration configuration)
++    {
++        services.AddDbContext<OrdersDbContext>(options => options.UseNpgsql(configuration.GetConnectionString("Orders")));
++        services.AddScoped<IOrderRepository, EfOrderRepository>();
++        services.AddScoped<IOrderQueries, OrderQueries>();
++
++        services.AddOptions<RabbitMqOptions>()
++            .BindConfiguration(RabbitMqOptions.SectionName)
++            .ValidateDataAnnotations()
++            .ValidateOnStart();
++        services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
++        services.AddSingleton<IIntegrationEventPublisher, RabbitMqPublisher>();
++
++        services.AddHealthChecks().AddDbContextCheck<OrdersDbContext>("database", tags: ["ready"]);
++        return services;
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqConnectionProvider.cs b/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqConnectionProvider.cs
+new file mode 100644
+index 0000000..909c77f
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqConnectionProvider.cs
+@@ -0,0 +1,59 @@
++using Microsoft.Extensions.Options;
++using RabbitMQ.Client;
++
++namespace Quellbrook.Orders.Infrastructure.Messaging;
++
++public interface IRabbitMqConnectionProvider
++{
++    Task<IConnection> GetConnectionAsync(CancellationToken cancellationToken);
++}
++
++/// <summary>One long-lived connection per process, opened on first use; the client recovers it automatically.</summary>
++public sealed class RabbitMqConnectionProvider(IOptions<RabbitMqOptions> options) : IRabbitMqConnectionProvider, IAsyncDisposable
++{
++    private readonly SemaphoreSlim _gate = new(1, 1);
++    private IConnection? _connection;
++
++    public async Task<IConnection> GetConnectionAsync(CancellationToken cancellationToken)
++    {
++        if (_connection is { IsOpen: true } open)
++        {
++            return open;
++        }
++
++        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
++        try
++        {
++            if (_connection is { IsOpen: true } current)
++            {
++                return current;
++            }
++
++            var settings = options.Value;
++            var factory = new ConnectionFactory
++            {
++                Uri = settings.Uri ?? throw new InvalidOperationException("RabbitMq:Uri is not configured."),
++                UserName = settings.UserName,
++                Password = settings.Password,
++                ClientProvidedName = "quellbrook-orders",
++                AutomaticRecoveryEnabled = true,
++            };
++            _connection = await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
++            return _connection;
++        }
++        finally
++        {
++            _gate.Release();
++        }
++    }
++
++    public async ValueTask DisposeAsync()
++    {
++        if (_connection is not null)
++        {
++            await _connection.DisposeAsync().ConfigureAwait(false);
++        }
++
++        _gate.Dispose();
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqOptions.cs b/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqOptions.cs
+new file mode 100644
+index 0000000..9c6bd6f
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqOptions.cs
+@@ -0,0 +1,22 @@
++using System.ComponentModel.DataAnnotations;
++
++namespace Quellbrook.Orders.Infrastructure.Messaging;
++
++/// <summary>Where events are published. Credentials come from the environment (a Kubernetes Secret).</summary>
++public sealed class RabbitMqOptions
++{
++    public const string SectionName = "RabbitMq";
++
++    /// <summary>amqps://host:port/virtual-host, without credentials.</summary>
++    [Required]
++    public Uri? Uri { get; set; }
++
++    [Required]
++    public string UserName { get; set; } = string.Empty;
++
++    [Required]
++    public string Password { get; set; } = string.Empty;
++
++    [Required]
++    public string Exchange { get; set; } = "quellbrook.events";
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqPublisher.cs b/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqPublisher.cs
+new file mode 100644
+index 0000000..53bc274
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqPublisher.cs
+@@ -0,0 +1,45 @@
++using System.Text.Json;
++using Microsoft.Extensions.Options;
++using Quellbrook.Orders.Application.Abstractions;
++using RabbitMQ.Client;
++
++namespace Quellbrook.Orders.Infrastructure.Messaging;
++
++/// <summary>
++/// Publishes JSON events to the topic exchange with the event type as routing key, as persistent messages, and waits
++/// for the broker's publisher confirmation.
++/// </summary>
++public sealed class RabbitMqPublisher(IRabbitMqConnectionProvider connections, IOptions<RabbitMqOptions> options)
++    : IIntegrationEventPublisher
++{
++    private static readonly JsonSerializerOptions s_json = new(JsonSerializerDefaults.Web);
++
++    public async Task PublishAsync<T>(Guid messageId, string eventType, T payload, CancellationToken cancellationToken)
++        where T : class
++    {
++        var body = JsonSerializer.SerializeToUtf8Bytes(payload, s_json);
++        await PublishRawAsync(messageId, eventType, body, cancellationToken).ConfigureAwait(false);
++    }
++
++    public async Task PublishRawAsync(Guid messageId, string eventType, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
++    {
++        var exchange = options.Value.Exchange;
++        var connection = await connections.GetConnectionAsync(cancellationToken).ConfigureAwait(false);
++        var channelOptions = new CreateChannelOptions(publisherConfirmationsEnabled: true, publisherConfirmationTrackingEnabled: true);
++        var channel = await connection.CreateChannelAsync(channelOptions, cancellationToken).ConfigureAwait(false);
++        await using (channel.ConfigureAwait(false))
++        {
++            await channel.ExchangeDeclareAsync(exchange, ExchangeType.Topic, durable: true, autoDelete: false, cancellationToken: cancellationToken)
++                .ConfigureAwait(false);
++            var properties = new BasicProperties
++            {
++                MessageId = messageId.ToString(),
++                Type = eventType,
++                ContentType = "application/json",
++                DeliveryMode = DeliveryModes.Persistent,
++            };
++            await channel.BasicPublishAsync(exchange, eventType, mandatory: true, properties, body, cancellationToken)
++                .ConfigureAwait(false);
++        }
++    }
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs b/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs
+new file mode 100644
+index 0000000..e41f28c
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs
+@@ -0,0 +1,53 @@
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Time.Testing;
++using Quellbrook.Orders.Application;
++using Quellbrook.Orders.Application.PlaceOrder;
++using Quellbrook.Orders.Contracts.IntegrationEvents;
++using Quellbrook.Orders.UnitTests.TestSupport;
++
++namespace Quellbrook.Orders.UnitTests.Application;
++
++public sealed class PlaceOrderHandlerTests
++{
++    private readonly InMemoryOrderRepository _orders = new();
++    private readonly RecordingPublisher _publisher = new();
++    private readonly FakeTimeProvider _time = new(OrderData.PlacedAt);
++
++    private PlaceOrderHandler Handler() => new(_orders, _publisher, _time, NullLogger<PlaceOrderHandler>.Instance);
++
++    [Fact]
++    public async Task AValidOrderIsStoredAndAnnounced()
++    {
++        var result = await Handler().HandleAsync(OrderData.Command(parcels: 2), TestContext.Current.CancellationToken);
++
++        Assert.Equal(OperationStatus.Succeeded, result.Status);
++        var order = Assert.Single(_orders.Stored.Values);
++        Assert.Equal(1, _orders.Saves);
++        var (_, eventType, payload) = Assert.Single(_publisher.Published);
++        Assert.Equal(OrderPlacedV1.EventType, eventType);
++        var placed = Assert.IsType<OrderPlacedV1>(payload);
++        Assert.Equal(order.Id.Value, placed.OrderId);
++        Assert.Equal("standard", placed.ServiceLevel);
++        Assert.Equal("DK", placed.Consignee.Address.CountryCode);
++        Assert.Equal(2, placed.Parcels.Count);
++    }
++
++    [Fact]
++    public async Task AnUnknownServiceLevelIsInvalidAndNothingIsStored()
++    {
++        var result = await Handler().HandleAsync(OrderData.Command(serviceLevel: "overnight"), TestContext.Current.CancellationToken);
++
++        Assert.Equal(OperationStatus.Invalid, result.Status);
++        Assert.Contains("overnight", result.Error, StringComparison.Ordinal);
++        Assert.Empty(_orders.Stored);
++        Assert.Empty(_publisher.Published);
++    }
++
++    [Fact]
++    public async Task TooManyParcelsForExpressIsInvalid()
++    {
++        var result = await Handler().HandleAsync(OrderData.Command(serviceLevel: "express", parcels: 6), TestContext.Current.CancellationToken);
++
++        Assert.Equal(OperationStatus.Invalid, result.Status);
++    }
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/Infrastructure/OrderQueriesTests.cs b/tests/Quellbrook.Orders.UnitTests/Infrastructure/OrderQueriesTests.cs
+new file mode 100644
+index 0000000..012a85a
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/Infrastructure/OrderQueriesTests.cs
+@@ -0,0 +1,42 @@
++using Quellbrook.Orders.Domain.Orders;
++using Quellbrook.Orders.Infrastructure.Persistence;
++using Quellbrook.Orders.UnitTests.TestSupport;
++
++namespace Quellbrook.Orders.UnitTests.Infrastructure;
++
++public sealed class OrderQueriesTests : IDisposable
++{
++    private readonly SqliteOrdersDb _db = new();
++
++    [Fact]
++    public async Task OrdersAreListedNewestFirstOnePageAtATime()
++    {
++        await StoreAsync(5);
++        using var context = _db.CreateContext();
++
++        var page = await new OrderQueries(context).ListAsync(2, 2);
++
++        Assert.Equal(5, page.TotalCount);
++        Assert.Equal(2, page.Items.Count);
++        Assert.True(page.Items[0].PlacedAt > page.Items[1].PlacedAt);
++        Assert.Equal("Aarhus C", page.Items[0].DestinationCity);
++        Assert.Equal(2, page.Items[0].ParcelCount);
++    }
++
++    private async Task StoreAsync(int count)
++    {
++        using var context = _db.CreateContext();
++        var repository = new EfOrderRepository(context);
++        for (var i = 0; i < count; i++)
++        {
++            repository.Add(Order.Place(
++                new OrderId(Guid.NewGuid()), CustomerAccountId.Parse("QB-104233"), OrderData.ConsigneeInAarhus(),
++                ServiceLevel.Standard, [OrderData.Parcel(), OrderData.Parcel()], "operator-17",
++                OrderData.PlacedAt.AddMinutes(i)));
++        }
++
++        await repository.SaveChangesAsync(TestContext.Current.CancellationToken);
++    }
++
++    public void Dispose() => _db.Dispose();
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqPublisherTests.cs b/tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqPublisherTests.cs
+new file mode 100644
+index 0000000..014b9bf
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqPublisherTests.cs
+@@ -0,0 +1,49 @@
++using System.Text.Json;
++using Microsoft.Extensions.Options;
++using NSubstitute;
++using Quellbrook.Orders.Infrastructure.Messaging;
++using RabbitMQ.Client;
++
++namespace Quellbrook.Orders.UnitTests.Infrastructure;
++
++public sealed class RabbitMqPublisherTests
++{
++    private readonly IChannel _channel = Substitute.For<IChannel>();
++    private readonly IRabbitMqConnectionProvider _connections = Substitute.For<IRabbitMqConnectionProvider>();
++
++    public RabbitMqPublisherTests()
++    {
++        var connection = Substitute.For<IConnection>();
++        connection.CreateChannelAsync(Arg.Any<CreateChannelOptions?>(), Arg.Any<CancellationToken>()).Returns(_channel);
++        _connections.GetConnectionAsync(Arg.Any<CancellationToken>()).Returns(connection);
++    }
++
++    [Fact]
++    public async Task EventsArePublishedPersistentlyToTheTopicExchangeUnderTheirType()
++    {
++        var publisher = new RabbitMqPublisher(_connections, Options.Create(new RabbitMqOptions { Exchange = "quellbrook.events" }));
++        var messageId = Guid.Parse("0198f1a2-0000-7000-8000-0000000000aa");
++        ReadOnlyMemory<byte> body = default;
++        BasicProperties? properties = null;
++        await _channel.BasicPublishAsync(
++            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(),
++            Arg.Do<BasicProperties>(value => properties = value),
++            Arg.Do<ReadOnlyMemory<byte>>(value => body = value),
++            Arg.Any<CancellationToken>());
++
++        await publisher.PublishAsync(messageId, "orders.order-placed.v1", new { OrderId = 42 }, TestContext.Current.CancellationToken);
++
++        await _channel.Received(1).ExchangeDeclareAsync(
++            "quellbrook.events", ExchangeType.Topic, true, Arg.Is(false), Arg.Any<IDictionary<string, object?>?>(),
++            Arg.Is(false), Arg.Is(false), Arg.Any<CancellationToken>());
++        await _channel.Received(1).BasicPublishAsync(
++            "quellbrook.events", "orders.order-placed.v1", true, Arg.Any<BasicProperties>(),
++            Arg.Any<ReadOnlyMemory<byte>>(), Arg.Any<CancellationToken>());
++        Assert.NotNull(properties);
++        Assert.Equal(messageId.ToString(), properties.MessageId);
++        Assert.Equal(DeliveryModes.Persistent, properties.DeliveryMode);
++        Assert.Equal("application/json", properties.ContentType);
++        using var json = JsonDocument.Parse(body);
++        Assert.Equal(42, json.RootElement.GetProperty("orderId").GetInt32());
++    }
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/TestSupport/InMemoryOrderRepository.cs b/tests/Quellbrook.Orders.UnitTests/TestSupport/InMemoryOrderRepository.cs
+new file mode 100644
+index 0000000..9e5c636
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/TestSupport/InMemoryOrderRepository.cs
+@@ -0,0 +1,21 @@
++using Quellbrook.Orders.Domain.Orders;
++
++namespace Quellbrook.Orders.UnitTests.TestSupport;
++
++internal sealed class InMemoryOrderRepository : IOrderRepository
++{
++    public Dictionary<OrderId, Order> Stored { get; } = [];
++
++    public int Saves { get; private set; }
++
++    public Task<Order?> FindAsync(OrderId id, CancellationToken cancellationToken) =>
++        Task.FromResult(Stored.GetValueOrDefault(id));
++
++    public void Add(Order order) => Stored.Add(order.Id, order);
++
++    public Task SaveChangesAsync(CancellationToken cancellationToken)
++    {
++        Saves++;
++        return Task.CompletedTask;
++    }
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingPublisher.cs b/tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingPublisher.cs
+new file mode 100644
+index 0000000..4f7dc5f
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/TestSupport/RecordingPublisher.cs
+@@ -0,0 +1,15 @@
++using Quellbrook.Orders.Application.Abstractions;
++
++namespace Quellbrook.Orders.UnitTests.TestSupport;
++
++internal sealed class RecordingPublisher : IIntegrationEventPublisher
++{
++    public List<(Guid MessageId, string EventType, object Payload)> Published { get; } = [];
++
++    public Task PublishAsync<T>(Guid messageId, string eventType, T payload, CancellationToken cancellationToken)
++        where T : class
++    {
++        Published.Add((messageId, eventType, payload));
++        return Task.CompletedTask;
++    }
++}

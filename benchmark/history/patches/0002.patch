@@ -1,0 +1,71 @@
+From 0b294435b4a3851ca5c5d2df40dbfe94d7861774 Mon Sep 17 00:00:00 2001
+From: Ruth Calloway <ruth.calloway@example.invalid>
+Date: Mon, 27 Jul 2026 14:05:44 +0200
+Subject: docs: ADR 0001 (record decisions) and ADR 0002 (layered domain model)
+
+---
+ .../adr/0001-record-architecture-decisions.md | 21 +++++++++++++++
+ docs/adr/0002-layered-domain-model.md         | 26 +++++++++++++++++++
+ 2 files changed, 47 insertions(+)
+ create mode 100644 docs/adr/0001-record-architecture-decisions.md
+ create mode 100644 docs/adr/0002-layered-domain-model.md
+
+diff --git a/docs/adr/0001-record-architecture-decisions.md b/docs/adr/0001-record-architecture-decisions.md
+new file mode 100644
+index 0000000..1ffb803
+--- /dev/null
++++ b/docs/adr/0001-record-architecture-decisions.md
+@@ -0,0 +1,21 @@
++# 1. Record architecture decisions
++
++- Status: Accepted
++- Date: 2026-07-27
++- Deciders: Ruth Calloway, Pavel Strand, Odile Marchetti
++
++## Context
++
++The order service is new and owned by one team, but its decisions affect the gateway, dispatch and notifier teams.
++Decisions made in conversation are lost when people move on.
++
++## Decision
++
++We record every decision that shapes the service's structure, contracts or operation as an architecture decision
++record in `docs/adr`, numbered, with status, context, decision and consequences. A decision that replaces an earlier
++one supersedes it explicitly.
++
++## Consequences
++
++- Positive: newcomers and other teams can read why the service looks the way it does; reviews can point at a record.
++- Negative: writing a record takes time, and records go stale if superseded decisions are not marked.
+diff --git a/docs/adr/0002-layered-domain-model.md b/docs/adr/0002-layered-domain-model.md
+new file mode 100644
+index 0000000..d21453f
+--- /dev/null
++++ b/docs/adr/0002-layered-domain-model.md
+@@ -0,0 +1,26 @@
++# 2. Layered projects around a persistence-ignorant domain model
++
++- Status: Accepted
++- Date: 2026-07-27
++- Deciders: Ruth Calloway, Pavel Strand
++
++## Context
++
++Orders carry real business rules (parcel limits per service level, weights, delivery countries, who may cancel and
++when) and will grow. Other teams depend on what an order means, so the rules must live in one place and be testable
++without a database or HTTP.
++
++## Decision
++
++Four projects with dependencies pointing inward: Domain (the Order aggregate, value objects, domain events; no
++framework references), Application (command handlers and queries), Infrastructure (EF Core persistence, the broker
++client) and Api (endpoints and hosting). The aggregate enforces its invariants and is stored through a repository
++that maps it to rows; it is not an EF Core entity. Integration contracts live in their own project and are mapped
++from the aggregate in the application layer.
++
++## Consequences
++
++- Positive: domain rules are unit-tested in isolation; persistence can change without touching them; the published
++  contract cannot leak domain types.
++- Negative: an explicit mapping layer to maintain (aggregate to row, aggregate to contract); more projects than a
++  single-project service would need.

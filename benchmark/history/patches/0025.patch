@@ -1,0 +1,166 @@
+From e85ab7c1abb434fb26bc9d05eb3628edbea75a5f Mon Sep 17 00:00:00 2001
+From: Ruth Calloway <ruth.calloway@example.invalid>
+Date: Thu, 3 Sep 2026 11:47:05 +0200
+Subject: test(messaging): connection reuse and reconnection
+
+---
+ ...frastructureServiceCollectionExtensions.cs |  4 ++
+ .../Messaging/RabbitMqConnectionProvider.cs   | 31 ++++++---
+ .../RabbitMqConnectionProviderTests.cs        | 66 +++++++++++++++++++
+ 3 files changed, 91 insertions(+), 10 deletions(-)
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqConnectionProviderTests.cs
+
+diff --git a/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs b/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs
+index 78edf85..9d9a3ad 100644
+--- a/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs
++++ b/src/Quellbrook.Orders.Infrastructure/InfrastructureServiceCollectionExtensions.cs
+@@ -1,11 +1,13 @@
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Options;
+ using Quellbrook.Orders.Application.Queries;
+ using Quellbrook.Orders.Domain.Orders;
+ using Quellbrook.Orders.Infrastructure.Messaging;
+ using Quellbrook.Orders.Infrastructure.Outbox;
+ using Quellbrook.Orders.Infrastructure.Persistence;
++using RabbitMQ.Client;
+ 
+ namespace Quellbrook.Orders.Infrastructure;
+ 
+@@ -21,6 +23,8 @@ public static class InfrastructureServiceCollectionExtensions
+             .BindConfiguration(RabbitMqOptions.SectionName)
+             .ValidateDataAnnotations()
+             .ValidateOnStart();
++        services.AddSingleton<IConnectionFactory>(provider =>
++            RabbitMqConnectionProvider.CreateFactory(provider.GetRequiredService<IOptions<RabbitMqOptions>>()));
+         services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
+         services.AddSingleton<IOutboxPublisher, RabbitMqPublisher>();
+         services.AddOptions<OutboxOptions>()
+diff --git a/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqConnectionProvider.cs b/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqConnectionProvider.cs
+index 909c77f..714d3a7 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqConnectionProvider.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Messaging/RabbitMqConnectionProvider.cs
+@@ -8,8 +8,8 @@ public interface IRabbitMqConnectionProvider
+     Task<IConnection> GetConnectionAsync(CancellationToken cancellationToken);
+ }
+ 
+-/// <summary>One long-lived connection per process, opened on first use; the client recovers it automatically.</summary>
+-public sealed class RabbitMqConnectionProvider(IOptions<RabbitMqOptions> options) : IRabbitMqConnectionProvider, IAsyncDisposable
++/// <summary>One long-lived connection per process, opened on first use and reopened if the broker closed it.</summary>
++public sealed class RabbitMqConnectionProvider(IConnectionFactory factory) : IRabbitMqConnectionProvider, IAsyncDisposable
+ {
+     private readonly SemaphoreSlim _gate = new(1, 1);
+     private IConnection? _connection;
+@@ -29,15 +29,11 @@ public sealed class RabbitMqConnectionProvider(IOptions<RabbitMqOptions> options
+                 return current;
+             }
+ 
+-            var settings = options.Value;
+-            var factory = new ConnectionFactory
++            if (_connection is not null)
+             {
+-                Uri = settings.Uri ?? throw new InvalidOperationException("RabbitMq:Uri is not configured."),
+-                UserName = settings.UserName,
+-                Password = settings.Password,
+-                ClientProvidedName = "quellbrook-orders",
+-                AutomaticRecoveryEnabled = true,
+-            };
++                await _connection.DisposeAsync().ConfigureAwait(false);
++            }
++
+             _connection = await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
+             return _connection;
+         }
+@@ -56,4 +52,19 @@ public sealed class RabbitMqConnectionProvider(IOptions<RabbitMqOptions> options
+ 
+         _gate.Dispose();
+     }
++
++    /// <summary>The client's connection factory for the configured broker; automatic recovery on.</summary>
++    public static ConnectionFactory CreateFactory(IOptions<RabbitMqOptions> options)
++    {
++        ArgumentNullException.ThrowIfNull(options);
++        var settings = options.Value;
++        return new ConnectionFactory
++        {
++            Uri = settings.Uri ?? throw new InvalidOperationException("RabbitMq:Uri is not configured."),
++            UserName = settings.UserName,
++            Password = settings.Password,
++            ClientProvidedName = "quellbrook-orders",
++            AutomaticRecoveryEnabled = true,
++        };
++    }
+ }
+diff --git a/tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqConnectionProviderTests.cs b/tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqConnectionProviderTests.cs
+new file mode 100644
+index 0000000..2944d40
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/Infrastructure/RabbitMqConnectionProviderTests.cs
+@@ -0,0 +1,66 @@
++using Microsoft.Extensions.Options;
++using NSubstitute;
++using Quellbrook.Orders.Infrastructure.Messaging;
++using RabbitMQ.Client;
++
++namespace Quellbrook.Orders.UnitTests.Infrastructure;
++
++public sealed class RabbitMqConnectionProviderTests
++{
++    private readonly IConnectionFactory _factory = Substitute.For<IConnectionFactory>();
++
++    [Fact]
++    public async Task AnOpenConnectionIsReused()
++    {
++        var connection = Connection(open: true);
++        _factory.CreateConnectionAsync(Arg.Any<CancellationToken>()).Returns(connection);
++        await using var provider = new RabbitMqConnectionProvider(_factory);
++
++        var first = await provider.GetConnectionAsync(TestContext.Current.CancellationToken);
++        var second = await provider.GetConnectionAsync(TestContext.Current.CancellationToken);
++
++        Assert.Same(first, second);
++        await _factory.Received(1).CreateConnectionAsync(Arg.Any<CancellationToken>());
++    }
++
++    [Fact]
++    public async Task AClosedConnectionIsDisposedAndReplaced()
++    {
++        var closed = Connection(open: false);
++        var fresh = Connection(open: true);
++        _factory.CreateConnectionAsync(Arg.Any<CancellationToken>()).Returns(closed, fresh);
++        await using var provider = new RabbitMqConnectionProvider(_factory);
++
++        await provider.GetConnectionAsync(TestContext.Current.CancellationToken);
++        var second = await provider.GetConnectionAsync(TestContext.Current.CancellationToken);
++
++        Assert.Same(fresh, second);
++        await closed.Received(1).DisposeAsync();
++    }
++
++    [Fact]
++    public void TheFactoryUsesTheConfiguredBrokerAndCredentials()
++    {
++        var factory = RabbitMqConnectionProvider.CreateFactory(Options.Create(new RabbitMqOptions
++        {
++            Uri = new Uri("amqps://rabbitmq.messaging.svc.cluster.local:5671/quellbrook"),
++            UserName = "orders",
++        }));
++
++        Assert.Equal("rabbitmq.messaging.svc.cluster.local", factory.HostName);
++        Assert.Equal("quellbrook", factory.VirtualHost);
++        Assert.Equal("orders", factory.UserName);
++        Assert.True(factory.AutomaticRecoveryEnabled);
++    }
++
++    [Fact]
++    public void AMissingBrokerAddressIsAConfigurationError() =>
++        Assert.Throws<InvalidOperationException>(() => RabbitMqConnectionProvider.CreateFactory(Options.Create(new RabbitMqOptions())));
++
++    private static IConnection Connection(bool open)
++    {
++        var connection = Substitute.For<IConnection>();
++        connection.IsOpen.Returns(open);
++        return connection;
++    }
++}

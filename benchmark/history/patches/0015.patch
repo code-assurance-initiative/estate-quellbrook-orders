@@ -1,0 +1,169 @@
+From c98d5fbe000ba36fcdb673c34c88594230fa0cdb Mon Sep 17 00:00:00 2001
+From: Odile Marchetti <odile.marchetti@example.invalid>
+Date: Wed, 19 Aug 2026 10:03:57 +0200
+Subject: docs: outbox and cancellation in the README, architecture and API
+ contract
+
+---
+ README.md              |  8 +++++++-
+ contracts/openapi.yaml | 37 ++++++++++++++++++++++++++++++++++++-
+ docs/architecture.md   | 30 +++++++++++++++++++++++++-----
+ 3 files changed, 68 insertions(+), 7 deletions(-)
+
+diff --git a/README.md b/README.md
+index b5e409b..e1a220b 100644
+--- a/README.md
++++ b/README.md
+@@ -16,6 +16,7 @@ consignee.
+ | `POST /orders` | `orders:write` | Place an order (`X-Quellbrook-Operator` names the operator) |
+ | `GET /orders/{id}` | `orders:read` | Read one order |
+ | `GET /orders?page=&pageSize=` | `orders:read` | List orders, newest first |
++| `POST /orders/{id}/cancellation` | `orders:write` | Cancel an order with a reason |
+ | `GET /health/live`, `GET /health/ready` | none | Liveness and readiness probes |
+ 
+ The contract is `contracts/openapi.yaml`. Only the gateway holds a token with these scopes; it authenticates the
+@@ -26,6 +27,11 @@ operator and forwards the operator's id.
+ | Routing key | When |
+ |---|---|
+ | `orders.order-placed.v1` | an order was placed |
++| `orders.order-cancelled.v1` | an order was cancelled |
++
++Events are written to an outbox table in the same transaction as the order and published by a relay inside the
++service (ADR 0003), so an order and its event are stored together or not at all. Delivery is at least once;
++consumers de-duplicate on the AMQP `message-id`.
+ 
+ ## Build and run
+ 
+@@ -59,7 +65,7 @@ dotnet test Quellbrook.Orders.slnx
+ `tests/Quellbrook.Orders.UnitTests` covers the Order aggregate and its value objects, the command handlers, the
+ repository and queries (over in-memory SQLite) and the broker publisher (against a substituted channel).
+ `tests/Quellbrook.Orders.IntegrationTests` hosts the real API with `WebApplicationFactory` over in-memory SQLite, an
+-in-process token issuer and a recording publisher. No test touches the network.
++in-process token issuer; tests read the outbox table to see what would be published. No test touches the network.
+ 
+ ## Architecture
+ 
+diff --git a/contracts/openapi.yaml b/contracts/openapi.yaml
+index eb1b5a3..e72a405 100644
+--- a/contracts/openapi.yaml
++++ b/contracts/openapi.yaml
+@@ -1,7 +1,7 @@
+ openapi: 3.1.0
+ info:
+   title: Quellbrook Orders API
+-  version: 0.1.0
++  version: 0.2.0
+   description: Order service of the Quellbrook operations platform. Called by the API gateway only.
+ servers:
+   - url: http://quellbrook-orders.quellbrook-orders.svc.cluster.local
+@@ -46,6 +46,35 @@ paths:
+             application/json:
+               schema:
+                 $ref: '#/components/schemas/OrderPage'
++  /orders/{id}/cancellation:
++    post:
++      summary: Cancel an order
++      security:
++        - bearer: [orders:write]
++      parameters:
++        - name: id
++          in: path
++          required: true
++          schema: { type: string, format: uuid }
++        - $ref: '#/components/parameters/Operator'
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              type: object
++              required: [reason]
++              properties:
++                reason: { type: string, minLength: 1, maxLength: 200 }
++      responses:
++        '204':
++          description: Cancelled.
++        '400':
++          $ref: '#/components/responses/Problem'
++        '404':
++          $ref: '#/components/responses/Problem'
++        '409':
++          $ref: '#/components/responses/Problem'
+   /orders/{id}:
+     get:
+       summary: Read one order
+@@ -138,6 +167,12 @@ components:
+         totalWeightGrams: { type: integer }
+         placedBy: { type: string }
+         placedAt: { type: string, format: date-time }
++        cancellation:
++          type: [object, 'null']
++          properties:
++            by: { type: string }
++            at: { type: string, format: date-time }
++            reason: { type: string }
+     OrderPage:
+       type: object
+       properties:
+diff --git a/docs/architecture.md b/docs/architecture.md
+index b723eb7..856e6f2 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -38,14 +38,14 @@ C4Container
+   title Containers — order service
+   System_Ext(gateway, "API gateway / BFF", "estate-quellbrook-gateway")
+   Container_Boundary(service, "Order service") {
+-    Container(api, "Orders API", "ASP.NET Core, .NET 10", "Places, reads and lists orders; publishes order events")
+-    ContainerDb(db, "Orders database", "PostgreSQL 16", "orders")
++    Container(api, "Orders API", "ASP.NET Core, .NET 10", "Places, reads, lists and cancels orders; outbox relay")
++    ContainerDb(db, "Orders database", "PostgreSQL 16", "orders, outbox_messages")
+   }
+   ContainerQueue(broker, "Event broker", "RabbitMQ", "topic exchange quellbrook.events")
+   System_Ext(idp, "Identity provider", "OpenID Connect")
+   Rel(gateway, api, "Calls", "HTTP/JSON over mesh mTLS, bearer token with orders:read / orders:write")
+   Rel(api, db, "Reads and writes", "EF Core / Npgsql")
+-  Rel(api, broker, "Publishes orders.order-placed.v1", "AMQPS")
++  Rel(api, broker, "Publishes orders.*.v1 from the outbox", "AMQPS")
+   Rel(api, idp, "Fetches token signing keys", "HTTPS")
+ ```
+ 
+@@ -56,17 +56,37 @@ C4Container
+ | `Quellbrook.Orders.Domain` | the Order aggregate, its value objects and domain events | nothing |
+ | `Quellbrook.Orders.Contracts` | the published integration-event contracts (`OrderPlacedV1`) | nothing |
+ | `Quellbrook.Orders.Application` | command handlers, queries, the contract mapping | Domain, Contracts |
+-| `Quellbrook.Orders.Infrastructure` | EF Core persistence and migrations, the RabbitMQ publisher | Application |
++| `Quellbrook.Orders.Infrastructure` | EF Core persistence and migrations, the outbox and its relay, the RabbitMQ publisher | Application |
+ | `Quellbrook.Orders.Api` | minimal-API endpoints, authentication and authorization, hosting | Infrastructure |
+ 
+ The aggregate knows nothing about storage: `EfOrderRepository` maps it to an `orders` row (consignee and parcels as
+-JSON documents, the list's filter and sort fields as columns).
++JSON documents, the list's filter and sort fields as columns). When it saves, it also writes one `outbox_messages`
++row per domain event the aggregate raised, in the same transaction; `OutboxRelay`, a background service in the same
++process, publishes pending rows in order and marks them dispatched (ADR 0003).
++
++```mermaid
++sequenceDiagram
++  participant G as Gateway
++  participant A as Orders API
++  participant D as PostgreSQL
++  participant R as Outbox relay
++  participant B as RabbitMQ
++  G->>A: POST /orders
++  A->>D: INSERT orders + outbox_messages (one transaction)
++  A-->>G: 201 Created
++  loop every 2 s
++    R->>D: SELECT undispatched ORDER BY occurred_at
++    R->>B: publish (message-id = outbox id), wait for confirm
++    R->>D: UPDATE dispatched_at
++  end
++```
+ 
+ ## Message contracts
+ 
+ | Routing key | Payload | Consumers |
+ |---|---|---|
+ | `orders.order-placed.v1` | `OrderPlacedV1`: order id, customer account, service level, consignee (name, address, optional e-mail and phone), parcels | dispatch, notifier |
++| `orders.order-cancelled.v1` | `OrderCancelledV1`: order id, reason, time | dispatch |
+ 
+ Messages are JSON, persistent, with the AMQP `message-id` set; consumers de-duplicate on it. A v1 contract only gains
+ optional fields; a breaking change is a new routing key (`.v2`) published alongside v1 until every consumer moved.

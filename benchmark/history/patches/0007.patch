@@ -1,0 +1,340 @@
+From ca6c83b673f226712f9e57a0f1c38f576388507f Mon Sep 17 00:00:00 2001
+From: Odile Marchetti <odile.marchetti@example.invalid>
+Date: Tue, 4 Aug 2026 09:50:37 +0200
+Subject: build: container image and Kubernetes manifests
+
+---
+ .dockerignore                   |  11 ++++
+ deploy/k8s/deployment.yaml      | 112 ++++++++++++++++++++++++++++++++
+ deploy/k8s/external-secret.yaml |  40 ++++++++++++
+ deploy/k8s/namespace.yaml       |  12 ++++
+ deploy/k8s/networkpolicy.yaml   |  96 +++++++++++++++++++++++++++
+ deploy/k8s/service.yaml         |  13 ++++
+ 6 files changed, 284 insertions(+)
+ create mode 100644 .dockerignore
+ create mode 100644 deploy/k8s/deployment.yaml
+ create mode 100644 deploy/k8s/external-secret.yaml
+ create mode 100644 deploy/k8s/namespace.yaml
+ create mode 100644 deploy/k8s/networkpolicy.yaml
+ create mode 100644 deploy/k8s/service.yaml
+
+diff --git a/.dockerignore b/.dockerignore
+new file mode 100644
+index 0000000..66a32b5
+--- /dev/null
++++ b/.dockerignore
+@@ -0,0 +1,11 @@
++**/bin/
++**/obj/
++**/TestResults/
++.git/
++.github/
++deploy/
++docs/
++tests/
++benchmark/
++contracts/
++*.md
+diff --git a/deploy/k8s/deployment.yaml b/deploy/k8s/deployment.yaml
+new file mode 100644
+index 0000000..ea9d1d4
+--- /dev/null
++++ b/deploy/k8s/deployment.yaml
+@@ -0,0 +1,112 @@
++apiVersion: v1
++kind: ServiceAccount
++metadata:
++  name: quellbrook-orders
++  namespace: quellbrook-orders
++automountServiceAccountToken: false
++---
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: quellbrook-orders
++  namespace: quellbrook-orders
++  labels:
++    app.kubernetes.io/name: quellbrook-orders
++    app.kubernetes.io/part-of: quellbrook
++spec:
++  replicas: 2
++  revisionHistoryLimit: 5
++  strategy:
++    type: RollingUpdate
++    rollingUpdate:
++      maxUnavailable: 0
++      maxSurge: 1
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: quellbrook-orders
++  template:
++    metadata:
++      annotations:
++        linkerd.io/inject: enabled
++      labels:
++        app.kubernetes.io/name: quellbrook-orders
++        app.kubernetes.io/part-of: quellbrook
++    spec:
++      serviceAccountName: quellbrook-orders
++      automountServiceAccountToken: false
++      securityContext:
++        runAsNonRoot: true
++        runAsUser: 10001
++        runAsGroup: 10001
++        fsGroup: 10001
++        seccompProfile:
++          type: RuntimeDefault
++      containers:
++        - name: api
++          image: ghcr.io/code-assurance-initiative/quellbrook-orders@sha256:d105b15c1ef840d9a692d447964197982b9b7cf32a2ad026e7630c43808c527f
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 8080
++          env:
++            - name: ASPNETCORE_ENVIRONMENT
++              value: Production
++            - name: OTEL_EXPORTER_OTLP_ENDPOINT
++              value: http://otel-collector.observability.svc:4317
++            - name: ConnectionStrings__Orders
++              valueFrom:
++                secretKeyRef:
++                  name: quellbrook-orders-db
++                  key: connection-string
++            - name: RabbitMq__UserName
++              valueFrom:
++                secretKeyRef:
++                  name: quellbrook-orders-broker
++                  key: username
++            - name: RabbitMq__Password
++              valueFrom:
++                secretKeyRef:
++                  name: quellbrook-orders-broker
++                  key: password
++          readinessProbe:
++            httpGet:
++              path: /health/ready
++              port: http
++            periodSeconds: 5
++            failureThreshold: 3
++          livenessProbe:
++            httpGet:
++              path: /health/live
++              port: http
++            periodSeconds: 10
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 100m
++              memory: 192Mi
++            limits:
++              cpu: "1"
++              memory: 384Mi
++          securityContext:
++            allowPrivilegeEscalation: false
++            readOnlyRootFilesystem: true
++            capabilities:
++              drop: ["ALL"]
++          volumeMounts:
++            - name: tmp
++              mountPath: /tmp
++      volumes:
++        - name: tmp
++          emptyDir:
++            sizeLimit: 64Mi
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: quellbrook-orders
++  namespace: quellbrook-orders
++spec:
++  minAvailable: 1
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: quellbrook-orders
+diff --git a/deploy/k8s/external-secret.yaml b/deploy/k8s/external-secret.yaml
+new file mode 100644
+index 0000000..3d778a0
+--- /dev/null
++++ b/deploy/k8s/external-secret.yaml
+@@ -0,0 +1,40 @@
++# Credentials live in the platform's secret store; External Secrets Operator materialises them as Kubernetes Secrets.
++apiVersion: external-secrets.io/v1
++kind: ExternalSecret
++metadata:
++  name: quellbrook-orders-db
++  namespace: quellbrook-orders
++spec:
++  refreshInterval: 1h
++  secretStoreRef:
++    kind: ClusterSecretStore
++    name: quellbrook-vault
++  target:
++    name: quellbrook-orders-db
++  data:
++    - secretKey: connection-string
++      remoteRef:
++        key: orders/postgres
++        property: connection-string
++---
++apiVersion: external-secrets.io/v1
++kind: ExternalSecret
++metadata:
++  name: quellbrook-orders-broker
++  namespace: quellbrook-orders
++spec:
++  refreshInterval: 1h
++  secretStoreRef:
++    kind: ClusterSecretStore
++    name: quellbrook-vault
++  target:
++    name: quellbrook-orders-broker
++  data:
++    - secretKey: username
++      remoteRef:
++        key: orders/rabbitmq
++        property: username
++    - secretKey: password
++      remoteRef:
++        key: orders/rabbitmq
++        property: password
+diff --git a/deploy/k8s/namespace.yaml b/deploy/k8s/namespace.yaml
+new file mode 100644
+index 0000000..9e21ed6
+--- /dev/null
++++ b/deploy/k8s/namespace.yaml
+@@ -0,0 +1,12 @@
++apiVersion: v1
++kind: Namespace
++metadata:
++  name: quellbrook-orders
++  annotations:
++    # Every pod gets the mesh sidecar: in-cluster traffic is mutual TLS (docs/architecture.md).
++    linkerd.io/inject: enabled
++  labels:
++    app.kubernetes.io/part-of: quellbrook
++    quellbrook.example/team: orders
++    pod-security.kubernetes.io/enforce: restricted
++    pod-security.kubernetes.io/enforce-version: latest
+diff --git a/deploy/k8s/networkpolicy.yaml b/deploy/k8s/networkpolicy.yaml
+new file mode 100644
+index 0000000..1e3f0c6
+--- /dev/null
++++ b/deploy/k8s/networkpolicy.yaml
+@@ -0,0 +1,96 @@
++# Default deny in both directions, then one allowance per real flow.
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: default-deny
++  namespace: quellbrook-orders
++spec:
++  podSelector: {}
++  policyTypes: ["Ingress", "Egress"]
++---
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: allow-dns
++  namespace: quellbrook-orders
++spec:
++  podSelector: {}
++  policyTypes: ["Egress"]
++  egress:
++    - to:
++        - namespaceSelector:
++            matchLabels:
++              kubernetes.io/metadata.name: kube-system
++          podSelector:
++            matchLabels:
++              k8s-app: kube-dns
++      ports:
++        - protocol: UDP
++          port: 53
++        - protocol: TCP
++          port: 53
++---
++# Only the gateway calls the API.
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: api-from-gateway
++  namespace: quellbrook-orders
++spec:
++  podSelector:
++    matchLabels:
++      app.kubernetes.io/name: quellbrook-orders
++  policyTypes: ["Ingress"]
++  ingress:
++    - from:
++        - namespaceSelector:
++            matchLabels:
++              kubernetes.io/metadata.name: quellbrook-edge
++          podSelector:
++            matchLabels:
++              app.kubernetes.io/name: quellbrook-gateway
++      ports:
++        - protocol: TCP
++          port: 8080
++---
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: api-egress
++  namespace: quellbrook-orders
++spec:
++  podSelector:
++    matchLabels:
++      app.kubernetes.io/name: quellbrook-orders
++  policyTypes: ["Egress"]
++  egress:
++    # PostgreSQL
++    - to:
++        - ipBlock:
++            cidr: 10.20.8.0/24
++      ports:
++        - protocol: TCP
++          port: 5432
++    # RabbitMQ (amqps)
++    - to:
++        - namespaceSelector:
++            matchLabels:
++              kubernetes.io/metadata.name: messaging
++      ports:
++        - protocol: TCP
++          port: 5671
++    # Identity provider (token signing keys) and the telemetry collector
++    - to:
++        - namespaceSelector:
++            matchLabels:
++              kubernetes.io/metadata.name: identity
++      ports:
++        - protocol: TCP
++          port: 443
++    - to:
++        - namespaceSelector:
++            matchLabels:
++              kubernetes.io/metadata.name: observability
++      ports:
++        - protocol: TCP
++          port: 4317
+diff --git a/deploy/k8s/service.yaml b/deploy/k8s/service.yaml
+new file mode 100644
+index 0000000..6d87ec0
+--- /dev/null
++++ b/deploy/k8s/service.yaml
+@@ -0,0 +1,13 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: quellbrook-orders
++  namespace: quellbrook-orders
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: quellbrook-orders
++  ports:
++    - name: http
++      port: 80
++      targetPort: http

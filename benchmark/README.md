@@ -68,11 +68,12 @@ which quality rises. The commits that tell the story are listed in `benchmark/hi
 | TRP-009 | `solution-structure` | `(repository)` | Quellbrook.Orders.Contracts is a small project on purpose: it holds only the published event contracts, so they can be versioned on their own and can never reference the domain (ADR 0002, ADR 0004). A thin contract assembly is the intended structure, not a project to consolidate. Repository-level: a scanner reports the solution's shape without a site. |
 | TRP-010 | `missing-image-healthcheck` | `src/Quellbrook.Orders.Api/Dockerfile` | The image runs only on Kubernetes, which ignores a Dockerfile HEALTHCHECK; liveness and readiness probes are declared in deploy/k8s/deployment.yaml (the Dockerfile says so in its header). |
 | TRP-011 | `compiled-code-size` | `src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs:8-10` | OrderRecordConfiguration.Configure is EF Core's fluent mapping of one table: a flat sequence of declarative calls with no branches. Its IL size grows with the number of columns, not with any logic a reader has to follow. |
+| TRP-012 | `primitive-entity-identifier` | `src/Quellbrook.Orders.Domain/Orders/Order.cs:57` | Order.RequestKey is the caller's opaque idempotency key for the request that placed the order, not an identifier of the order or of any domain object; nothing references an order by it except the duplicate check. Wrapping a pass-through string in a strongly typed id would add nothing. |
 | TRP-008 | `cleartext-transmission` | `src/Quellbrook.Orders.Api/appsettings.Development.json:9` | appsettings.Development.json points the broker at amqp://localhost for a developer's local RabbitMQ container; production configuration (appsettings.json) uses amqps. Plain AMQP to the loopback interface crosses no network. |
 
 ## Certified clean
 
-145 `clean` entries, one per tracked file: files without a label are certified clean for every concept (`"*"`); a file that carries a plant or a trap is certified clean for every finding concept except the labelled ones and the concepts a result of those labels would restate.
+173 `clean` entries, one per tracked file: files without a label are certified clean for every concept (`"*"`); a file that carries a plant or a trap is certified clean for every finding concept except the labelled ones and the concepts a result of those labels would restate.
 
 ## Not applicable
 

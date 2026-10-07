@@ -1,0 +1,728 @@
+From 0b26b69389fe4168d255ac350243793a6a443c44 Mon Sep 17 00:00:00 2001
+From: Ruth Calloway <ruth.calloway@example.invalid>
+Date: Wed, 29 Jul 2026 10:15:03 +0200
+Subject: feat(persistence): store orders in PostgreSQL through EF Core
+
+---
+ .../Persistence/DesignTimeDbContextFactory.cs | 21 +++++
+ .../Persistence/EfOrderRepository.cs          | 56 ++++++++++++
+ .../20260729101500_InitialCreate.Designer.cs  | 91 +++++++++++++++++++
+ .../20260729101500_InitialCreate.cs           | 49 ++++++++++
+ .../OrdersDbContextModelSnapshot.cs           | 88 ++++++++++++++++++
+ .../Persistence/OrderDocuments.cs             | 80 ++++++++++++++++
+ .../Persistence/OrderQueries.cs               | 30 ++++++
+ .../Persistence/OrderRecord.cs                | 33 +++++++
+ .../Persistence/OrderRecordConfiguration.cs   | 23 +++++
+ .../Persistence/OrdersDbContext.cs            | 14 +++
+ .../DesignTimeDbContextFactoryTests.cs        | 15 +++
+ .../Infrastructure/EfOrderRepositoryTests.cs  | 72 +++++++++++++++
+ .../TestSupport/SqliteOrdersDb.cs             | 44 +++++++++
+ 13 files changed, 616 insertions(+)
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/DesignTimeDbContextFactory.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260729101500_InitialCreate.Designer.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260729101500_InitialCreate.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/OrderQueries.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/OrdersDbContext.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/Infrastructure/DesignTimeDbContextFactoryTests.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/Infrastructure/EfOrderRepositoryTests.cs
+ create mode 100644 tests/Quellbrook.Orders.UnitTests/TestSupport/SqliteOrdersDb.cs
+
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/DesignTimeDbContextFactory.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/DesignTimeDbContextFactory.cs
+new file mode 100644
+index 0000000..e4f4c3c
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/DesignTimeDbContextFactory.cs
+@@ -0,0 +1,21 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Design;
++
++namespace Quellbrook.Orders.Infrastructure.Persistence;
++
++/// <summary>
++/// Used by <c>dotnet ef</c> and by the migrations bundle. The connection string comes from the environment, never from
++/// the command line, so it does not show up in process listings or CI logs.
++/// </summary>
++public sealed class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<OrdersDbContext>
++{
++    public OrdersDbContext CreateDbContext(string[] args)
++    {
++        var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__Orders")
++            ?? "Host=localhost;Database=orders;Username=orders";
++        var options = new DbContextOptionsBuilder<OrdersDbContext>()
++            .UseNpgsql(connectionString)
++            .Options;
++        return new OrdersDbContext(options);
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs
+new file mode 100644
+index 0000000..55f3cf8
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs
+@@ -0,0 +1,56 @@
++using Microsoft.EntityFrameworkCore;
++using Quellbrook.Orders.Domain.Orders;
++
++namespace Quellbrook.Orders.Infrastructure.Persistence;
++
++/// <summary>
++/// Loads and stores Order aggregates. Every aggregate loaded or added through one repository instance (one request)
++/// is written back by <see cref="SaveChangesAsync"/>.
++/// </summary>
++public sealed class EfOrderRepository(OrdersDbContext db) : IOrderRepository
++{
++    private readonly Dictionary<Guid, (Order Order, OrderRecord Record)> _tracked = [];
++
++    public async Task<Order?> FindAsync(OrderId id, CancellationToken cancellationToken)
++    {
++        if (_tracked.TryGetValue(id.Value, out var tracked))
++        {
++            return tracked.Order;
++        }
++
++        var record = await db.Orders.SingleOrDefaultAsync(order => order.Id == id.Value, cancellationToken).ConfigureAwait(false);
++        if (record is null)
++        {
++            return null;
++        }
++
++        var order = OrderDocuments.ToOrder(record);
++        _tracked[id.Value] = (order, record);
++        return order;
++    }
++
++    public void Add(Order order)
++    {
++        ArgumentNullException.ThrowIfNull(order);
++        var record = new OrderRecord();
++        OrderDocuments.CopyTo(order, record);
++        db.Orders.Add(record);
++        _tracked[order.Id.Value] = (order, record);
++    }
++
++    public async Task SaveChangesAsync(CancellationToken cancellationToken)
++    {
++        foreach (var (order, record) in _tracked.Values)
++        {
++            OrderDocuments.CopyTo(order, record);
++            if (db.Entry(record).State == EntityState.Modified)
++            {
++                record.Version++;
++            }
++
++            order.ClearDomainEvents();
++        }
++
++        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260729101500_InitialCreate.Designer.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260729101500_InitialCreate.Designer.cs
+new file mode 100644
+index 0000000..7561bd7
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260729101500_InitialCreate.Designer.cs
+@@ -0,0 +1,91 @@
++﻿// <auto-generated />
++using System;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
++using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
++using Quellbrook.Orders.Infrastructure.Persistence;
++
++#nullable disable
++
++namespace Quellbrook.Orders.Infrastructure.Persistence.Migrations
++{
++    [DbContext(typeof(OrdersDbContext))]
++    [Migration("20260729101500_InitialCreate")]
++    partial class InitialCreate
++    {
++        /// <inheritdoc />
++        protected override void BuildTargetModel(ModelBuilder modelBuilder)
++        {
++#pragma warning disable 612, 618
++            modelBuilder
++                .HasAnnotation("ProductVersion", "10.0.12")
++                .HasAnnotation("Relational:MaxIdentifierLength", 63);
++
++            NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
++
++            modelBuilder.Entity("Quellbrook.Orders.Infrastructure.Persistence.OrderRecord", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uuid");
++
++                    b.Property<string>("Consignee")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<string>("ConsigneeName")
++                        .IsRequired()
++                        .HasMaxLength(100)
++                        .HasColumnType("character varying(100)");
++
++                    b.Property<string>("CustomerAccountId")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<string>("DestinationCity")
++                        .IsRequired()
++                        .HasMaxLength(60)
++                        .HasColumnType("character varying(60)");
++
++                    b.Property<int>("ParcelCount")
++                        .HasColumnType("integer");
++
++                    b.Property<string>("Parcels")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<DateTimeOffset>("PlacedAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<string>("PlacedBy")
++                        .IsRequired()
++                        .HasMaxLength(64)
++                        .HasColumnType("character varying(64)");
++
++                    b.Property<string>("ServiceLevel")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<string>("Status")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<int>("Version")
++                        .IsConcurrencyToken()
++                        .HasColumnType("integer");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("PlacedAt");
++
++                    b.ToTable("orders", (string)null);
++                });
++#pragma warning restore 612, 618
++        }
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260729101500_InitialCreate.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260729101500_InitialCreate.cs
+new file mode 100644
+index 0000000..a107cbc
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260729101500_InitialCreate.cs
+@@ -0,0 +1,49 @@
++﻿using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace Quellbrook.Orders.Infrastructure.Persistence.Migrations
++{
++    /// <inheritdoc />
++    public partial class InitialCreate : Migration
++    {
++        /// <inheritdoc />
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "orders",
++                columns: table => new
++                {
++                    Id = table.Column<Guid>(type: "uuid", nullable: false),
++                    CustomerAccountId = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false),
++                    ServiceLevel = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false),
++                    Status = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false),
++                    ConsigneeName = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
++                    DestinationCity = table.Column<string>(type: "character varying(60)", maxLength: 60, nullable: false),
++                    ParcelCount = table.Column<int>(type: "integer", nullable: false),
++                    Consignee = table.Column<string>(type: "jsonb", nullable: false),
++                    Parcels = table.Column<string>(type: "jsonb", nullable: false),
++                    PlacedBy = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
++                    PlacedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
++                    Version = table.Column<int>(type: "integer", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_orders", x => x.Id);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_orders_PlacedAt",
++                table: "orders",
++                column: "PlacedAt");
++        }
++
++        /// <inheritdoc />
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "orders");
++        }
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs
+new file mode 100644
+index 0000000..e6bae5a
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs
+@@ -0,0 +1,88 @@
++﻿// <auto-generated />
++using System;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
++using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
++using Quellbrook.Orders.Infrastructure.Persistence;
++
++#nullable disable
++
++namespace Quellbrook.Orders.Infrastructure.Persistence.Migrations
++{
++    [DbContext(typeof(OrdersDbContext))]
++    partial class OrdersDbContextModelSnapshot : ModelSnapshot
++    {
++        protected override void BuildModel(ModelBuilder modelBuilder)
++        {
++#pragma warning disable 612, 618
++            modelBuilder
++                .HasAnnotation("ProductVersion", "10.0.12")
++                .HasAnnotation("Relational:MaxIdentifierLength", 63);
++
++            NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
++
++            modelBuilder.Entity("Quellbrook.Orders.Infrastructure.Persistence.OrderRecord", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uuid");
++
++                    b.Property<string>("Consignee")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<string>("ConsigneeName")
++                        .IsRequired()
++                        .HasMaxLength(100)
++                        .HasColumnType("character varying(100)");
++
++                    b.Property<string>("CustomerAccountId")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<string>("DestinationCity")
++                        .IsRequired()
++                        .HasMaxLength(60)
++                        .HasColumnType("character varying(60)");
++
++                    b.Property<int>("ParcelCount")
++                        .HasColumnType("integer");
++
++                    b.Property<string>("Parcels")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<DateTimeOffset>("PlacedAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<string>("PlacedBy")
++                        .IsRequired()
++                        .HasMaxLength(64)
++                        .HasColumnType("character varying(64)");
++
++                    b.Property<string>("ServiceLevel")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<string>("Status")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<int>("Version")
++                        .IsConcurrencyToken()
++                        .HasColumnType("integer");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("PlacedAt");
++
++                    b.ToTable("orders", (string)null);
++                });
++#pragma warning restore 612, 618
++        }
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs
+new file mode 100644
+index 0000000..d283f04
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs
+@@ -0,0 +1,80 @@
++using System.Text.Json;
++using Quellbrook.Orders.Domain.Orders;
++
++namespace Quellbrook.Orders.Infrastructure.Persistence;
++
++internal sealed record ConsigneeDocument(
++    string Name,
++    string Line1,
++    string? Line2,
++    string PostalCode,
++    string City,
++    string CountryCode,
++    string? Email,
++    string? Phone);
++
++internal sealed record ParcelDocument(int Number, int WeightGrams, int LengthCm, int WidthCm, int HeightCm);
++
++/// <summary>Maps the aggregate to and from <see cref="OrderRecord"/>.</summary>
++internal static class OrderDocuments
++{
++    private static readonly JsonSerializerOptions s_json = new(JsonSerializerDefaults.Web);
++
++    public static void CopyTo(Order order, OrderRecord record)
++    {
++        var consignee = order.Consignee;
++        record.Id = order.Id.Value;
++        record.CustomerAccountId = order.Customer.Value;
++        record.ServiceLevel = order.ServiceLevel.ToString();
++        record.Status = order.Status.ToString();
++        record.ConsigneeName = consignee.Name;
++        record.DestinationCity = consignee.Address.City;
++        record.ParcelCount = order.Parcels.Count;
++        record.Consignee = JsonSerializer.Serialize(
++            new ConsigneeDocument(
++                consignee.Name,
++                consignee.Address.Line1,
++                consignee.Address.Line2,
++                consignee.Address.PostalCode,
++                consignee.Address.City,
++                consignee.Address.CountryCode,
++                consignee.Contact.Email,
++                consignee.Contact.Phone),
++            s_json);
++        record.Parcels = JsonSerializer.Serialize(
++            order.Parcels.Select(parcel => new ParcelDocument(
++                parcel.Number,
++                parcel.WeightGrams,
++                parcel.Dimensions.LengthCm,
++                parcel.Dimensions.WidthCm,
++                parcel.Dimensions.HeightCm)),
++            s_json);
++        record.PlacedBy = order.PlacedBy;
++        record.PlacedAt = order.PlacedAt;
++    }
++
++    public static Order ToOrder(OrderRecord record)
++    {
++        var consignee = Deserialize<ConsigneeDocument>(record.Consignee);
++        var parcels = Deserialize<List<ParcelDocument>>(record.Parcels);
++        return Order.Restore(
++            new OrderId(record.Id),
++            CustomerAccountId.Parse(record.CustomerAccountId),
++            Consignee.Create(
++                consignee.Name,
++                Address.Create(consignee.Line1, consignee.Line2, consignee.PostalCode, consignee.City, consignee.CountryCode),
++                ContactDetails.Create(consignee.Email, consignee.Phone)),
++            Enum.Parse<ServiceLevel>(record.ServiceLevel),
++            parcels.Select(parcel => Parcel.Restore(
++                parcel.Number,
++                parcel.WeightGrams,
++                Dimensions.Create(parcel.LengthCm, parcel.WidthCm, parcel.HeightCm))),
++            Enum.Parse<OrderStatus>(record.Status),
++            record.PlacedBy,
++            record.PlacedAt);
++    }
++
++    private static T Deserialize<T>(string json) =>
++        JsonSerializer.Deserialize<T>(json, s_json)
++        ?? throw new InvalidOperationException($"Stored {typeof(T).Name} is empty.");
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderQueries.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderQueries.cs
+new file mode 100644
+index 0000000..a5b5317
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderQueries.cs
+@@ -0,0 +1,30 @@
++using Microsoft.EntityFrameworkCore;
++using Quellbrook.Orders.Application.Queries;
++
++namespace Quellbrook.Orders.Infrastructure.Persistence;
++
++public sealed class OrderQueries(OrdersDbContext db) : IOrderQueries
++{
++    public async Task<OrderPage> ListAsync(int page, int pageSize)
++    {
++        var orders = db.Orders.AsNoTracking();
++        var total = await orders.CountAsync().ConfigureAwait(false);
++        var items = await orders
++            .OrderByDescending(order => order.PlacedAt)
++            .ThenBy(order => order.Id)
++            .Skip((page - 1) * pageSize)
++            .Take(pageSize)
++            .Select(order => new OrderSummary(
++                order.Id,
++                order.CustomerAccountId,
++                order.ServiceLevel,
++                order.Status,
++                order.ConsigneeName,
++                order.DestinationCity,
++                order.ParcelCount,
++                order.PlacedAt))
++            .ToListAsync()
++            .ConfigureAwait(false);
++        return new OrderPage(items, page, pageSize, total);
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs
+new file mode 100644
+index 0000000..d4983e7
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs
+@@ -0,0 +1,33 @@
++namespace Quellbrook.Orders.Infrastructure.Persistence;
++
++/// <summary>
++/// The stored shape of an order. The aggregate is kept free of persistence concerns; EfOrderRepository maps between
++/// the two. Consignee and parcels are stored as JSON documents, the fields the order list filters and sorts on as
++/// columns.
++/// </summary>
++public sealed class OrderRecord
++{
++    public Guid Id { get; set; }
++
++    public string CustomerAccountId { get; set; } = string.Empty;
++
++    public string ServiceLevel { get; set; } = string.Empty;
++
++    public string Status { get; set; } = string.Empty;
++
++    public string ConsigneeName { get; set; } = string.Empty;
++
++    public string DestinationCity { get; set; } = string.Empty;
++
++    public int ParcelCount { get; set; }
++
++    public string Consignee { get; set; } = string.Empty;
++
++    public string Parcels { get; set; } = string.Empty;
++
++    public string PlacedBy { get; set; } = string.Empty;
++
++    public DateTimeOffset PlacedAt { get; set; }
++
++    public int Version { get; set; }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs
+new file mode 100644
+index 0000000..38e1101
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs
+@@ -0,0 +1,23 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++
++namespace Quellbrook.Orders.Infrastructure.Persistence;
++
++internal sealed class OrderRecordConfiguration : IEntityTypeConfiguration<OrderRecord>
++{
++    public void Configure(EntityTypeBuilder<OrderRecord> builder)
++    {
++        builder.ToTable("orders");
++        builder.HasKey(order => order.Id);
++        builder.Property(order => order.CustomerAccountId).HasMaxLength(16).IsRequired();
++        builder.Property(order => order.ServiceLevel).HasMaxLength(16).IsRequired();
++        builder.Property(order => order.Status).HasMaxLength(16).IsRequired();
++        builder.Property(order => order.ConsigneeName).HasMaxLength(100).IsRequired();
++        builder.Property(order => order.DestinationCity).HasMaxLength(60).IsRequired();
++        builder.Property(order => order.Consignee).HasColumnType("jsonb").IsRequired();
++        builder.Property(order => order.Parcels).HasColumnType("jsonb").IsRequired();
++        builder.Property(order => order.PlacedBy).HasMaxLength(64).IsRequired();
++        builder.Property(order => order.Version).IsConcurrencyToken();
++        builder.HasIndex(order => order.PlacedAt);
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrdersDbContext.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrdersDbContext.cs
+new file mode 100644
+index 0000000..d47d4df
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrdersDbContext.cs
+@@ -0,0 +1,14 @@
++using Microsoft.EntityFrameworkCore;
++
++namespace Quellbrook.Orders.Infrastructure.Persistence;
++
++public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) : DbContext(options)
++{
++    public DbSet<OrderRecord> Orders => Set<OrderRecord>();
++
++    protected override void OnModelCreating(ModelBuilder modelBuilder)
++    {
++        ArgumentNullException.ThrowIfNull(modelBuilder);
++        modelBuilder.ApplyConfigurationsFromAssembly(typeof(OrdersDbContext).Assembly);
++    }
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/Infrastructure/DesignTimeDbContextFactoryTests.cs b/tests/Quellbrook.Orders.UnitTests/Infrastructure/DesignTimeDbContextFactoryTests.cs
+new file mode 100644
+index 0000000..fd1b627
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/Infrastructure/DesignTimeDbContextFactoryTests.cs
+@@ -0,0 +1,15 @@
++using Microsoft.EntityFrameworkCore;
++using Quellbrook.Orders.Infrastructure.Persistence;
++
++namespace Quellbrook.Orders.UnitTests.Infrastructure;
++
++public sealed class DesignTimeDbContextFactoryTests
++{
++    [Fact]
++    public void TheDesignTimeContextTargetsPostgreSQL()
++    {
++        using var context = new DesignTimeDbContextFactory().CreateDbContext([]);
++
++        Assert.Equal("Npgsql.EntityFrameworkCore.PostgreSQL", context.Database.ProviderName);
++    }
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/Infrastructure/EfOrderRepositoryTests.cs b/tests/Quellbrook.Orders.UnitTests/Infrastructure/EfOrderRepositoryTests.cs
+new file mode 100644
+index 0000000..cabc5f2
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/Infrastructure/EfOrderRepositoryTests.cs
+@@ -0,0 +1,72 @@
++using Quellbrook.Orders.Domain.Orders;
++using Quellbrook.Orders.Infrastructure.Persistence;
++using Quellbrook.Orders.UnitTests.TestSupport;
++
++namespace Quellbrook.Orders.UnitTests.Infrastructure;
++
++public sealed class EfOrderRepositoryTests : IDisposable
++{
++    private readonly SqliteOrdersDb _db = new();
++
++    [Fact]
++    public async Task AnAddedOrderRoundTripsWithItsConsigneeAndParcels()
++    {
++        var order = OrderData.Placed(parcels: 2);
++        using (var context = _db.CreateContext())
++        {
++            var repository = new EfOrderRepository(context);
++            repository.Add(order);
++            await repository.SaveChangesAsync(TestContext.Current.CancellationToken);
++        }
++
++        using var reading = _db.CreateContext();
++        var loaded = await new EfOrderRepository(reading).FindAsync(order.Id, TestContext.Current.CancellationToken);
++
++        Assert.NotNull(loaded);
++        Assert.Equal(order.Consignee, loaded.Consignee);
++        Assert.Equal(order.Customer, loaded.Customer);
++        Assert.Equal(ServiceLevel.Standard, loaded.ServiceLevel);
++        Assert.Equal([1, 2], loaded.Parcels.Select(parcel => parcel.Number));
++        Assert.Equal(order.Parcels[0].Dimensions, loaded.Parcels[0].Dimensions);
++        Assert.Empty(loaded.DomainEvents);
++    }
++
++    [Fact]
++    public async Task SavingClearsTheRaisedEvents()
++    {
++        var order = OrderData.Placed();
++        using var context = _db.CreateContext();
++        var repository = new EfOrderRepository(context);
++        repository.Add(order);
++
++        await repository.SaveChangesAsync(TestContext.Current.CancellationToken);
++
++        Assert.Empty(order.DomainEvents);
++    }
++
++    [Fact]
++    public async Task AnUnknownOrderIsNotFound()
++    {
++        using var context = _db.CreateContext();
++
++        var loaded = await new EfOrderRepository(context).FindAsync(new OrderId(Guid.NewGuid()), TestContext.Current.CancellationToken);
++
++        Assert.Null(loaded);
++    }
++
++    [Fact]
++    public async Task FindingTheSameOrderTwiceReturnsTheTrackedAggregate()
++    {
++        var order = OrderData.Placed();
++        using var context = _db.CreateContext();
++        var repository = new EfOrderRepository(context);
++        repository.Add(order);
++        await repository.SaveChangesAsync(TestContext.Current.CancellationToken);
++
++        var first = await repository.FindAsync(order.Id, TestContext.Current.CancellationToken);
++
++        Assert.Same(order, first);
++    }
++
++    public void Dispose() => _db.Dispose();
++}
+diff --git a/tests/Quellbrook.Orders.UnitTests/TestSupport/SqliteOrdersDb.cs b/tests/Quellbrook.Orders.UnitTests/TestSupport/SqliteOrdersDb.cs
+new file mode 100644
+index 0000000..41766a6
+--- /dev/null
++++ b/tests/Quellbrook.Orders.UnitTests/TestSupport/SqliteOrdersDb.cs
+@@ -0,0 +1,44 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
++using Quellbrook.Orders.Infrastructure.Persistence;
++
++namespace Quellbrook.Orders.UnitTests.TestSupport;
++
++/// <summary>A throw-away in-memory SQLite database with the service's schema.</summary>
++internal sealed class SqliteOrdersDb : IDisposable
++{
++    private readonly SqliteConnection _connection = new("Data Source=:memory:");
++
++    public SqliteOrdersDb()
++    {
++        _connection.Open();
++        using var db = CreateContext();
++        db.Database.EnsureCreated();
++    }
++
++    public OrdersDbContext CreateContext() =>
++        new(new DbContextOptionsBuilder<OrdersDbContext>()
++            .UseSqlite(_connection)
++            .ReplaceService<IModelCustomizer, SqliteModelCustomizer>()
++            .Options);
++
++    public void Dispose() => _connection.Dispose();
++}
++
++/// <summary>SQLite cannot compare or order DateTimeOffset values; store them as ticks for the test database only.</summary>
++internal sealed class SqliteModelCustomizer(ModelCustomizerDependencies dependencies) : RelationalModelCustomizer(dependencies)
++{
++    public override void Customize(ModelBuilder modelBuilder, DbContext context)
++    {
++        base.Customize(modelBuilder, context);
++        foreach (var property in modelBuilder.Model.GetEntityTypes().SelectMany(entity => entity.GetProperties()))
++        {
++            if (property.ClrType == typeof(DateTimeOffset) || property.ClrType == typeof(DateTimeOffset?))
++            {
++                property.SetValueConverter(new DateTimeOffsetToBinaryConverter());
++            }
++        }
++    }
++}

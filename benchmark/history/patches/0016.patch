@@ -1,0 +1,43 @@
+From e91f36ac04db35511e5c159c080b1b92f86a2877 Mon Sep 17 00:00:00 2001
+From: Ruth Calloway <ruth.calloway@example.invalid>
+Date: Fri, 21 Aug 2026 16:10:08 +0200
+Subject: release 0.2.0
+
+---
+ CHANGELOG.md          | 9 +++++++++
+ Directory.Build.props | 2 +-
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index a378d41..6ecabdc 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,6 +3,15 @@
+ All notable changes to this project are documented here. The format follows
+ [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
+ 
++## [0.2.0] - 2026-08-21
++
++### Added
++- Cancelling an order (`POST /orders/{id}/cancellation`) and `orders.order-cancelled.v1`.
++
++### Changed
++- Events are published through a transactional outbox (ADR 0003): an order and its event are committed together, and
++  a relay publishes them. Previously an event could be lost when the broker was unavailable after the order was saved.
++
+ ## [0.1.0] - 2026-08-07
+ 
+ ### Added
+diff --git a/Directory.Build.props b/Directory.Build.props
+index a890668..6bd555c 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -10,7 +10,7 @@
+     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+     <RestoreLockedMode Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</RestoreLockedMode>
+-    <Version>0.1.0</Version>
++    <Version>0.2.0</Version>
+     <Authors>Quellbrook Freight</Authors>
+     <Copyright>Copyright (c) 2026 Quellbrook Freight</Copyright>
+   </PropertyGroup>

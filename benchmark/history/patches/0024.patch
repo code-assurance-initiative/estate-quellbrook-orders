@@ -1,0 +1,702 @@
+From 54343fddc26db0a7027146934237343ca2ee22ce Mon Sep 17 00:00:00 2001
+From: Pavel Strand <pavel.strand@example.invalid>
+Date: Wed, 2 Sep 2026 10:31:12 +0200
+Subject: feat(api): Idempotency-Key for placing orders; one path for
+ operator-authored commands
+
+A gateway timeout during a submission made the console retry it, and two orders were placed for one form.
+---
+ README.md                                     |   2 +-
+ contracts/openapi.yaml                        |   5 +
+ .../Contracts/PlaceOrderRequest.cs            |   5 +-
+ .../Endpoints/EndpointResults.cs              |  20 +++
+ .../Endpoints/OrderEndpoints.cs               |  53 ++-----
+ .../Security/IdempotencyKey.cs                |  18 +++
+ .../PlaceOrder/PlaceOrderCommand.cs           |   3 +-
+ .../PlaceOrder/PlaceOrderHandler.cs           |   9 +-
+ .../Orders/IOrderRepository.cs                |   3 +
+ src/Quellbrook.Orders.Domain/Orders/Order.cs  |  20 ++-
+ .../Persistence/EfOrderRepository.cs          |  18 ++-
+ ...20260902103000_OrderRequestKey.Designer.cs | 142 ++++++++++++++++++
+ .../20260902103000_OrderRequestKey.cs         |  39 +++++
+ .../OrdersDbContextModelSnapshot.cs           |   7 +
+ .../Persistence/OrderDocuments.cs             |   2 +
+ .../Persistence/OrderRecord.cs                |   2 +
+ .../Persistence/OrderRecordConfiguration.cs   |   2 +
+ .../OrdersApiTests.cs                         |  13 ++
+ .../Application/PlaceOrderHandlerTests.cs     |  12 ++
+ .../Domain/OrderTests.cs                      |   2 +-
+ .../TestSupport/InMemoryOrderRepository.cs    |   3 +
+ 21 files changed, 331 insertions(+), 49 deletions(-)
+ create mode 100644 src/Quellbrook.Orders.Api/Security/IdempotencyKey.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260902103000_OrderRequestKey.Designer.cs
+ create mode 100644 src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260902103000_OrderRequestKey.cs
+
+diff --git a/README.md b/README.md
+index 3812aac..0ce293c 100644
+--- a/README.md
++++ b/README.md
+@@ -13,7 +13,7 @@ consignee.
+ 
+ | Method and path | Scope | What it does |
+ |---|---|---|
+-| `POST /orders` | `orders:write` | Place an order (`X-Quellbrook-Operator` names the operator) |
++| `POST /orders` | `orders:write` | Place an order (`X-Quellbrook-Operator` names the operator; an optional `Idempotency-Key` makes a retried submission return the first order) |
+ | `GET /orders/{id}` | `orders:read` | Read one order |
+ | `GET /orders?page=&pageSize=&status=` | `orders:read` | List orders, newest first, optionally only `placed` or `cancelled` |
+ | `POST /orders/{id}/cancellation` | `orders:write` | Cancel an order with a reason |
+diff --git a/contracts/openapi.yaml b/contracts/openapi.yaml
+index b964e3a..06a3c46 100644
+--- a/contracts/openapi.yaml
++++ b/contracts/openapi.yaml
+@@ -15,6 +15,11 @@ paths:
+         - bearer: [orders:write]
+       parameters:
+         - $ref: '#/components/parameters/Operator'
++        - name: Idempotency-Key
++          in: header
++          required: false
++          description: One key per submission; a retry with the same key returns the order the first one placed.
++          schema: { type: string, maxLength: 64 }
+       requestBody:
+         required: true
+         content:
+diff --git a/src/Quellbrook.Orders.Api/Contracts/PlaceOrderRequest.cs b/src/Quellbrook.Orders.Api/Contracts/PlaceOrderRequest.cs
+index 4b54100..5196d0f 100644
+--- a/src/Quellbrook.Orders.Api/Contracts/PlaceOrderRequest.cs
++++ b/src/Quellbrook.Orders.Api/Contracts/PlaceOrderRequest.cs
+@@ -41,13 +41,14 @@ public sealed record PlaceOrderRequest(
+     }
+ 
+     /// <summary>Call only after <see cref="Validate"/> returned no errors.</summary>
+-    public PlaceOrderCommand ToCommand(string operatorId) =>
++    public PlaceOrderCommand ToCommand(string operatorId, string? idempotencyKey) =>
+         new(
+             CustomerAccountId ?? string.Empty,
+             ServiceLevel ?? string.Empty,
+             Consignee?.ToInput() ?? throw new InvalidOperationException("Validate the request first."),
+             [.. (Parcels ?? []).Select(parcel => parcel.ToInput())],
+-            operatorId);
++            operatorId,
++            idempotencyKey);
+ }
+ 
+ public sealed record ConsigneeRequest(
+diff --git a/src/Quellbrook.Orders.Api/Endpoints/EndpointResults.cs b/src/Quellbrook.Orders.Api/Endpoints/EndpointResults.cs
+index 8bcd080..04808ac 100644
+--- a/src/Quellbrook.Orders.Api/Endpoints/EndpointResults.cs
++++ b/src/Quellbrook.Orders.Api/Endpoints/EndpointResults.cs
+@@ -13,6 +13,26 @@ internal static class EndpointResults
+         _ => throw new ArgumentOutOfRangeException(nameof(result), result.Status, "Not a failure."),
+     };
+ 
++    /// <summary>
++    /// The common path of every command an operator authors: the operator header must be present and the request
++    /// valid before <paramref name="execute"/> runs with the operator's id.
++    /// </summary>
++    public static async Task<IResult> ForOperatorAsync(
++        HttpRequest http,
++        Dictionary<string, string[]> validationErrors,
++        Func<string, Task<IResult>> execute)
++    {
++        var operatorId = OperatorHeader.From(http);
++        if (operatorId is null)
++        {
++            return MissingOperator();
++        }
++
++        return validationErrors.Count > 0
++            ? Results.ValidationProblem(validationErrors)
++            : await execute(operatorId).ConfigureAwait(false);
++    }
++
+     public static IResult MissingOperator() =>
+         Results.Problem(
+             $"The {OperatorHeader.Name} header must name the operator (1 to {OperatorHeader.MaxLength} characters).",
+diff --git a/src/Quellbrook.Orders.Api/Endpoints/OrderEndpoints.cs b/src/Quellbrook.Orders.Api/Endpoints/OrderEndpoints.cs
+index c12a2ba..de8cfed 100644
+--- a/src/Quellbrook.Orders.Api/Endpoints/OrderEndpoints.cs
++++ b/src/Quellbrook.Orders.Api/Endpoints/OrderEndpoints.cs
+@@ -22,53 +22,32 @@ public static class OrderEndpoints
+         return app;
+     }
+ 
+-    private static async Task<IResult> PlaceAsync(
++    private static Task<IResult> PlaceAsync(
+         PlaceOrderRequest request,
+         HttpRequest http,
+         PlaceOrderHandler handler,
+-        CancellationToken cancellationToken)
+-    {
+-        var operatorId = OperatorHeader.From(http);
+-        if (operatorId is null)
+-        {
+-            return EndpointResults.MissingOperator();
+-        }
+-
+-        var errors = request.Validate();
+-        if (errors.Count > 0)
++        CancellationToken cancellationToken) =>
++        EndpointResults.ForOperatorAsync(http, request.Validate(), async operatorId =>
+         {
+-            return Results.ValidationProblem(errors);
+-        }
+-
+-        var result = await handler.HandleAsync(request.ToCommand(operatorId), cancellationToken).ConfigureAwait(false);
+-        return result.Status == OperationStatus.Succeeded
+-            ? Results.Created($"/orders/{result.Value}", new { id = result.Value.Value })
+-            : EndpointResults.Problem(result);
+-    }
++            var command = request.ToCommand(operatorId, IdempotencyKey.From(http));
++            var result = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
++            return result.Status == OperationStatus.Succeeded
++                ? Results.Created($"/orders/{result.Value}", new { id = result.Value.Value })
++                : EndpointResults.Problem(result);
++        });
+ 
+-    private static async Task<IResult> CancelAsync(
++    private static Task<IResult> CancelAsync(
+         Guid id,
+         CancelOrderRequest request,
+         HttpRequest http,
+         CancelOrderHandler handler,
+-        CancellationToken cancellationToken)
+-    {
+-        var operatorId = OperatorHeader.From(http);
+-        if (operatorId is null)
+-        {
+-            return EndpointResults.MissingOperator();
+-        }
+-
+-        var errors = request.Validate();
+-        if (errors.Count > 0)
++        CancellationToken cancellationToken) =>
++        EndpointResults.ForOperatorAsync(http, request.Validate(), async operatorId =>
+         {
+-            return Results.ValidationProblem(errors);
+-        }
+-
+-        var result = await handler.HandleAsync(new CancelOrderCommand(id, request.Reason ?? string.Empty, operatorId), cancellationToken)
+-            .ConfigureAwait(false);
+-        return result.Status == OperationStatus.Succeeded ? Results.NoContent() : EndpointResults.Problem(result);
+-    }
++            var command = new CancelOrderCommand(id, request.Reason ?? string.Empty, operatorId);
++            var result = await handler.HandleAsync(command, cancellationToken).ConfigureAwait(false);
++            return result.Status == OperationStatus.Succeeded ? Results.NoContent() : EndpointResults.Problem(result);
++        });
+ 
+     private static async Task<IResult> GetAsync(Guid id, IOrderRepository orders, CancellationToken cancellationToken)
+     {
+diff --git a/src/Quellbrook.Orders.Api/Security/IdempotencyKey.cs b/src/Quellbrook.Orders.Api/Security/IdempotencyKey.cs
+new file mode 100644
+index 0000000..3f24971
+--- /dev/null
++++ b/src/Quellbrook.Orders.Api/Security/IdempotencyKey.cs
+@@ -0,0 +1,18 @@
++namespace Quellbrook.Orders.Api.Security;
++
++/// <summary>
++/// The optional <c>Idempotency-Key</c> request header: the gateway sends one per submitted order form, so a retried
++/// submission returns the order the first one placed.
++/// </summary>
++public static class IdempotencyKey
++{
++    public const string HeaderName = "Idempotency-Key";
++    public const int MaxLength = 64;
++
++    public static string? From(HttpRequest request)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++        var value = request.Headers[HeaderName].ToString().Trim();
++        return value.Length is > 0 and <= MaxLength ? value : null;
++    }
++}
+diff --git a/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs b/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs
+index 036bd18..0631df1 100644
+--- a/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs
++++ b/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs
+@@ -5,7 +5,8 @@ public sealed record PlaceOrderCommand(
+     string ServiceLevel,
+     ConsigneeInput Consignee,
+     IReadOnlyList<ParcelInput> Parcels,
+-    string Operator);
++    string Operator,
++    string? IdempotencyKey = null);
+ 
+ public sealed record ConsigneeInput(
+     string Name,
+diff --git a/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs b/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs
+index a85a66b..c1a1932 100644
+--- a/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs
++++ b/src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderHandler.cs
+@@ -12,6 +12,12 @@ public sealed partial class PlaceOrderHandler(
+     public async Task<OperationResult<OrderId>> HandleAsync(PlaceOrderCommand command, CancellationToken cancellationToken)
+     {
+         ArgumentNullException.ThrowIfNull(command);
++        if (command.IdempotencyKey is { } key
++            && await orders.FindByRequestKeyAsync(key, cancellationToken).ConfigureAwait(false) is { } placedBefore)
++        {
++            return OperationResult.Succeeded(placedBefore.Id);
++        }
++
+         Order order;
+         try
+         {
+@@ -48,7 +54,8 @@ public sealed partial class PlaceOrderHandler(
+             ParseServiceLevel(command.ServiceLevel),
+             parcels,
+             command.Operator,
+-            now);
++            now,
++            command.IdempotencyKey);
+     }
+ 
+     private static ServiceLevel ParseServiceLevel(string value) => value switch
+diff --git a/src/Quellbrook.Orders.Domain/Orders/IOrderRepository.cs b/src/Quellbrook.Orders.Domain/Orders/IOrderRepository.cs
+index 085d138..d952d0e 100644
+--- a/src/Quellbrook.Orders.Domain/Orders/IOrderRepository.cs
++++ b/src/Quellbrook.Orders.Domain/Orders/IOrderRepository.cs
+@@ -4,6 +4,9 @@ public interface IOrderRepository
+ {
+     Task<Order?> FindAsync(OrderId id, CancellationToken cancellationToken);
+ 
++    /// <summary>The order placed by the request with this idempotency key, if any.</summary>
++    Task<Order?> FindByRequestKeyAsync(string requestKey, CancellationToken cancellationToken);
++
+     void Add(Order order);
+ 
+     Task SaveChangesAsync(CancellationToken cancellationToken);
+diff --git a/src/Quellbrook.Orders.Domain/Orders/Order.cs b/src/Quellbrook.Orders.Domain/Orders/Order.cs
+index 5e62112..447fa6c 100644
+--- a/src/Quellbrook.Orders.Domain/Orders/Order.cs
++++ b/src/Quellbrook.Orders.Domain/Orders/Order.cs
+@@ -19,7 +19,8 @@ public sealed class Order : AggregateRoot
+         ServiceLevel serviceLevel,
+         List<Parcel> parcels,
+         string placedBy,
+-        DateTimeOffset placedAt)
++        DateTimeOffset placedAt,
++        string? requestKey)
+     {
+         Id = id;
+         Customer = customer;
+@@ -28,6 +29,7 @@ public sealed class Order : AggregateRoot
+         _parcels = parcels;
+         PlacedBy = placedBy;
+         PlacedAt = placedAt;
++        RequestKey = requestKey;
+         Status = OrderStatus.Placed;
+     }
+ 
+@@ -48,6 +50,12 @@ public sealed class Order : AggregateRoot
+ 
+     public DateTimeOffset PlacedAt { get; }
+ 
++    /// <summary>
++    /// The caller's idempotency key for the request that placed the order, if it sent one: placing again with the
++    /// same key returns this order instead of placing a second one.
++    /// </summary>
++    public string? RequestKey { get; }
++
+     public string? CancelledBy { get; private set; }
+ 
+     public DateTimeOffset? CancelledAt { get; private set; }
+@@ -63,7 +71,8 @@ public sealed class Order : AggregateRoot
+         ServiceLevel serviceLevel,
+         IReadOnlyList<ParcelSpecification> parcels,
+         string placedBy,
+-        DateTimeOffset placedAt)
++        DateTimeOffset placedAt,
++        string? requestKey = null)
+     {
+         ArgumentNullException.ThrowIfNull(customer);
+         ArgumentNullException.ThrowIfNull(consignee);
+@@ -72,7 +81,7 @@ public sealed class Order : AggregateRoot
+         EnsureParcelsAllowed(serviceLevel, parcels);
+ 
+         var numbered = parcels.Select((specification, index) => Parcel.Create(index + 1, specification)).ToList();
+-        var order = new Order(id, customer, consignee, serviceLevel, numbered, placedBy, placedAt);
++        var order = new Order(id, customer, consignee, serviceLevel, numbered, placedBy, placedAt, requestKey);
+         order.Raise(new OrderPlaced(id, placedAt));
+         return order;
+     }
+@@ -87,8 +96,9 @@ public sealed class Order : AggregateRoot
+         OrderStatus status,
+         string placedBy,
+         DateTimeOffset placedAt,
+-        Cancellation? cancellation = null) =>
+-        new(id, customer, consignee, serviceLevel, [.. parcels], placedBy, placedAt)
++        string? requestKey,
++        Cancellation? cancellation) =>
++        new(id, customer, consignee, serviceLevel, [.. parcels], placedBy, placedAt, requestKey)
+         {
+             Status = status,
+             CancelledBy = cancellation?.By,
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs
+index 544de29..872f5a4 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs
+@@ -30,8 +30,24 @@ public sealed class EfOrderRepository(OrdersDbContext db) : IOrderRepository
+             return null;
+         }
+ 
++        return Track(record);
++    }
++
++    public async Task<Order?> FindByRequestKeyAsync(string requestKey, CancellationToken cancellationToken)
++    {
++        var record = await db.Orders.SingleOrDefaultAsync(order => order.RequestKey == requestKey, cancellationToken).ConfigureAwait(false);
++        if (record is null)
++        {
++            return null;
++        }
++
++        return _tracked.TryGetValue(record.Id, out var tracked) ? tracked.Order : Track(record);
++    }
++
++    private Order Track(OrderRecord record)
++    {
+         var order = OrderDocuments.ToOrder(record);
+-        _tracked[id.Value] = (order, record);
++        _tracked[record.Id] = (order, record);
+         return order;
+     }
+ 
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260902103000_OrderRequestKey.Designer.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260902103000_OrderRequestKey.Designer.cs
+new file mode 100644
+index 0000000..29f40d6
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260902103000_OrderRequestKey.Designer.cs
+@@ -0,0 +1,142 @@
++﻿// <auto-generated />
++using System;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
++using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
++using Quellbrook.Orders.Infrastructure.Persistence;
++
++#nullable disable
++
++namespace Quellbrook.Orders.Infrastructure.Persistence.Migrations
++{
++    [DbContext(typeof(OrdersDbContext))]
++    [Migration("20260902103000_OrderRequestKey")]
++    partial class OrderRequestKey
++    {
++        /// <inheritdoc />
++        protected override void BuildTargetModel(ModelBuilder modelBuilder)
++        {
++#pragma warning disable 612, 618
++            modelBuilder
++                .HasAnnotation("ProductVersion", "10.0.12")
++                .HasAnnotation("Relational:MaxIdentifierLength", 63);
++
++            NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
++
++            modelBuilder.Entity("Quellbrook.Orders.Infrastructure.Outbox.OutboxMessage", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uuid");
++
++                    b.Property<int>("Attempts")
++                        .HasColumnType("integer");
++
++                    b.Property<DateTimeOffset?>("DispatchedAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<DateTimeOffset>("OccurredAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<string>("Payload")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<string>("Type")
++                        .IsRequired()
++                        .HasMaxLength(100)
++                        .HasColumnType("character varying(100)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("DispatchedAt", "OccurredAt");
++
++                    b.ToTable("outbox_messages", (string)null);
++                });
++
++            modelBuilder.Entity("Quellbrook.Orders.Infrastructure.Persistence.OrderRecord", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uuid");
++
++                    b.Property<string>("CancellationReason")
++                        .HasMaxLength(200)
++                        .HasColumnType("character varying(200)");
++
++                    b.Property<DateTimeOffset?>("CancelledAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<string>("CancelledBy")
++                        .HasMaxLength(64)
++                        .HasColumnType("character varying(64)");
++
++                    b.Property<string>("Consignee")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<string>("ConsigneeName")
++                        .IsRequired()
++                        .HasMaxLength(100)
++                        .HasColumnType("character varying(100)");
++
++                    b.Property<string>("CustomerAccountId")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<string>("DestinationCity")
++                        .IsRequired()
++                        .HasMaxLength(60)
++                        .HasColumnType("character varying(60)");
++
++                    b.Property<int>("ParcelCount")
++                        .HasColumnType("integer");
++
++                    b.Property<string>("Parcels")
++                        .IsRequired()
++                        .HasColumnType("jsonb");
++
++                    b.Property<DateTimeOffset>("PlacedAt")
++                        .HasColumnType("timestamp with time zone");
++
++                    b.Property<string>("PlacedBy")
++                        .IsRequired()
++                        .HasMaxLength(64)
++                        .HasColumnType("character varying(64)");
++
++                    b.Property<string>("RequestKey")
++                        .HasMaxLength(64)
++                        .HasColumnType("character varying(64)");
++
++                    b.Property<string>("ServiceLevel")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<string>("Status")
++                        .IsRequired()
++                        .HasMaxLength(16)
++                        .HasColumnType("character varying(16)");
++
++                    b.Property<int>("Version")
++                        .IsConcurrencyToken()
++                        .HasColumnType("integer");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("PlacedAt");
++
++                    b.HasIndex("RequestKey")
++                        .IsUnique();
++
++                    b.HasIndex("Status", "PlacedAt");
++
++                    b.ToTable("orders", (string)null);
++                });
++#pragma warning restore 612, 618
++        }
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260902103000_OrderRequestKey.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260902103000_OrderRequestKey.cs
+new file mode 100644
+index 0000000..4d2354f
+--- /dev/null
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/20260902103000_OrderRequestKey.cs
+@@ -0,0 +1,39 @@
++﻿using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace Quellbrook.Orders.Infrastructure.Persistence.Migrations
++{
++    /// <inheritdoc />
++    public partial class OrderRequestKey : Migration
++    {
++        /// <inheritdoc />
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "RequestKey",
++                table: "orders",
++                type: "character varying(64)",
++                maxLength: 64,
++                nullable: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_orders_RequestKey",
++                table: "orders",
++                column: "RequestKey",
++                unique: true);
++        }
++
++        /// <inheritdoc />
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(
++                name: "IX_orders_RequestKey",
++                table: "orders");
++
++            migrationBuilder.DropColumn(
++                name: "RequestKey",
++                table: "orders");
++        }
++    }
++}
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs
+index 32f1ba2..7b4d0b0 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/Migrations/OrdersDbContextModelSnapshot.cs
+@@ -104,6 +104,10 @@ namespace Quellbrook.Orders.Infrastructure.Persistence.Migrations
+                         .HasMaxLength(64)
+                         .HasColumnType("character varying(64)");
+ 
++                    b.Property<string>("RequestKey")
++                        .HasMaxLength(64)
++                        .HasColumnType("character varying(64)");
++
+                     b.Property<string>("ServiceLevel")
+                         .IsRequired()
+                         .HasMaxLength(16)
+@@ -122,6 +126,9 @@ namespace Quellbrook.Orders.Infrastructure.Persistence.Migrations
+ 
+                     b.HasIndex("PlacedAt");
+ 
++                    b.HasIndex("RequestKey")
++                        .IsUnique();
++
+                     b.HasIndex("Status", "PlacedAt");
+ 
+                     b.ToTable("orders", (string)null);
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs
+index 9551dd3..3622bce 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderDocuments.cs
+@@ -51,6 +51,7 @@ internal static class OrderDocuments
+             s_json);
+         record.PlacedBy = order.PlacedBy;
+         record.PlacedAt = order.PlacedAt;
++        record.RequestKey = order.RequestKey;
+         record.CancelledBy = order.CancelledBy;
+         record.CancelledAt = order.CancelledAt;
+         record.CancellationReason = order.CancellationReason;
+@@ -75,6 +76,7 @@ internal static class OrderDocuments
+             Enum.Parse<OrderStatus>(record.Status),
+             record.PlacedBy,
+             record.PlacedAt,
++            record.RequestKey,
+             record.CancelledAt is { } cancelledAt
+                 ? new Cancellation(record.CancelledBy ?? string.Empty, cancelledAt, record.CancellationReason ?? string.Empty)
+                 : null);
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs
+index 46af2e1..a800d9c 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecord.cs
+@@ -29,6 +29,8 @@ public sealed class OrderRecord
+ 
+     public DateTimeOffset PlacedAt { get; set; }
+ 
++    public string? RequestKey { get; set; }
++
+     public string? CancelledBy { get; set; }
+ 
+     public DateTimeOffset? CancelledAt { get; set; }
+diff --git a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs
+index 5207320..3ca7ce1 100644
+--- a/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs
++++ b/src/Quellbrook.Orders.Infrastructure/Persistence/OrderRecordConfiguration.cs
+@@ -17,6 +17,8 @@ internal sealed class OrderRecordConfiguration : IEntityTypeConfiguration<OrderR
+         builder.Property(order => order.Consignee).HasColumnType("jsonb").IsRequired();
+         builder.Property(order => order.Parcels).HasColumnType("jsonb").IsRequired();
+         builder.Property(order => order.PlacedBy).HasMaxLength(64).IsRequired();
++        builder.Property(order => order.RequestKey).HasMaxLength(64);
++        builder.HasIndex(order => order.RequestKey).IsUnique();
+         builder.Property(order => order.CancelledBy).HasMaxLength(64);
+         builder.Property(order => order.CancellationReason).HasMaxLength(200);
+         builder.Property(order => order.Version).IsConcurrencyToken();
+diff --git a/tests/Quellbrook.Orders.IntegrationTests/OrdersApiTests.cs b/tests/Quellbrook.Orders.IntegrationTests/OrdersApiTests.cs
+index 12dcd5e..61008b5 100644
+--- a/tests/Quellbrook.Orders.IntegrationTests/OrdersApiTests.cs
++++ b/tests/Quellbrook.Orders.IntegrationTests/OrdersApiTests.cs
+@@ -39,6 +39,19 @@ public sealed class OrdersApiTests(OrdersApiFactory factory) : IClassFixture<Ord
+             message.Type == OrderPlacedV1.EventType && message.Payload.Contains(order.Id.ToString(), StringComparison.Ordinal));
+     }
+ 
++    [Fact]
++    public async Task ARetriedSubmissionWithTheSameIdempotencyKeyPlacesOneOrder()
++    {
++        var client = factory.CreateClient("operator-17", "orders:read", "orders:write");
++        client.DefaultRequestHeaders.Add("Idempotency-Key", $"form-{Guid.NewGuid():N}");
++
++        var first = await client.PostAsJsonAsync("/orders", NewOrder(), TestContext.Current.CancellationToken);
++        var retry = await client.PostAsJsonAsync("/orders", NewOrder(), TestContext.Current.CancellationToken);
++
++        Assert.Equal(HttpStatusCode.Created, retry.StatusCode);
++        Assert.Equal(first.Headers.Location, retry.Headers.Location);
++    }
++
+     [Fact]
+     public async Task OrdersAreListedAPageAtATime()
+     {
+diff --git a/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs b/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs
+index b82e452..184bf66 100644
+--- a/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs
++++ b/tests/Quellbrook.Orders.UnitTests/Application/PlaceOrderHandlerTests.cs
+@@ -43,6 +43,18 @@ public sealed class PlaceOrderHandlerTests
+         Assert.Empty(_orders.Stored);
+     }
+ 
++    [Fact]
++    public async Task PlacingAgainWithTheSameIdempotencyKeyReturnsTheFirstOrder()
++    {
++        var command = OrderData.Command() with { IdempotencyKey = "form-7f3a2c" };
++
++        var first = await Handler().HandleAsync(command, TestContext.Current.CancellationToken);
++        var second = await Handler().HandleAsync(command, TestContext.Current.CancellationToken);
++
++        Assert.Equal(first.Value, second.Value);
++        Assert.Single(_orders.Stored);
++    }
++
+     [Fact]
+     public async Task TooManyParcelsForExpressIsInvalid()
+     {
+diff --git a/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs b/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs
+index f95a4b1..41ddf0d 100644
+--- a/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs
++++ b/tests/Quellbrook.Orders.UnitTests/Domain/OrderTests.cs
+@@ -53,7 +53,7 @@ public sealed class OrderTests
+         var placed = OrderData.Placed();
+ 
+         var restored = Order.Restore(placed.Id, placed.Customer, placed.Consignee, placed.ServiceLevel, placed.Parcels,
+-            placed.Status, placed.PlacedBy, placed.PlacedAt);
++            placed.Status, placed.PlacedBy, placed.PlacedAt, placed.RequestKey, cancellation: null);
+ 
+         Assert.Empty(restored.DomainEvents);
+         Assert.Equal(placed.TotalWeightGrams, restored.TotalWeightGrams);
+diff --git a/tests/Quellbrook.Orders.UnitTests/TestSupport/InMemoryOrderRepository.cs b/tests/Quellbrook.Orders.UnitTests/TestSupport/InMemoryOrderRepository.cs
+index 9e5c636..97359f0 100644
+--- a/tests/Quellbrook.Orders.UnitTests/TestSupport/InMemoryOrderRepository.cs
++++ b/tests/Quellbrook.Orders.UnitTests/TestSupport/InMemoryOrderRepository.cs
+@@ -11,6 +11,9 @@ internal sealed class InMemoryOrderRepository : IOrderRepository
+     public Task<Order?> FindAsync(OrderId id, CancellationToken cancellationToken) =>
+         Task.FromResult(Stored.GetValueOrDefault(id));
+ 
++    public Task<Order?> FindByRequestKeyAsync(string requestKey, CancellationToken cancellationToken) =>
++        Task.FromResult(Stored.Values.FirstOrDefault(order => order.RequestKey == requestKey));
++
+     public void Add(Order order) => Stored.Add(order.Id, order);
+ 
+     public Task SaveChangesAsync(CancellationToken cancellationToken)

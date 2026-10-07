@@ -1,0 +1,324 @@
+From 9bf1217c83a5f2742254cc679600aff703906af7 Mon Sep 17 00:00:00 2001
+From: Ruth Calloway <ruth.calloway@example.invalid>
+Date: Wed, 5 Aug 2026 15:12:09 +0200
+Subject: ci: build, test, CodeQL, release and deploy workflows
+
+---
+ .github/dependabot.yml        | 35 +++++++++++++++
+ .github/workflows/ci.yml      | 49 ++++++++++++++++++++
+ .github/workflows/codeql.yml  | 41 +++++++++++++++++
+ .github/workflows/deploy.yml  | 66 +++++++++++++++++++++++++++
+ .github/workflows/release.yml | 85 +++++++++++++++++++++++++++++++++++
+ 5 files changed, 276 insertions(+)
+ create mode 100644 .github/dependabot.yml
+ create mode 100644 .github/workflows/ci.yml
+ create mode 100644 .github/workflows/codeql.yml
+ create mode 100644 .github/workflows/deploy.yml
+ create mode 100644 .github/workflows/release.yml
+
+diff --git a/.github/dependabot.yml b/.github/dependabot.yml
+new file mode 100644
+index 0000000..e20145f
+--- /dev/null
++++ b/.github/dependabot.yml
+@@ -0,0 +1,35 @@
++version: 2
++updates:
++  - package-ecosystem: nuget
++    directory: /
++    schedule:
++      interval: weekly
++    cooldown:
++      default-days: 7
++    groups:
++      microsoft:
++        patterns:
++          - "Microsoft.*"
++          - "Npgsql.*"
++      opentelemetry:
++        patterns:
++          - "OpenTelemetry*"
++      tests:
++        patterns:
++          - "xunit*"
++          - "coverlet.*"
++          - "NSubstitute"
++
++  - package-ecosystem: github-actions
++    directory: /
++    schedule:
++      interval: weekly
++    cooldown:
++      default-days: 7
++
++  - package-ecosystem: docker
++    directory: /src/Quellbrook.Orders.Api
++    schedule:
++      interval: weekly
++    cooldown:
++      default-days: 7
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000..ff3e7b6
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,49 @@
++name: CI
++
++on:
++  push:
++    branches: [main]
++  pull_request:
++    branches: [main]
++  schedule:
++    # Weekly, so newly published advisories against the locked dependency set fail the build
++    # even when nobody has pushed.
++    - cron: "17 5 * * 1"
++
++permissions:
++  contents: read
++
++concurrency:
++  group: ci-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  build-and-test:
++    runs-on: ubuntu-latest
++    timeout-minutes: 15
++    env:
++      DOTNET_NOLOGO: true
++      DOTNET_CLI_TELEMETRY_OPTOUT: true
++      ContinuousIntegrationBuild: true
++    steps:
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        with:
++          persist-credentials: false
++
++      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
++        with:
++          global-json-file: global.json
++
++      - name: Restore (locked)
++        run: dotnet restore Quellbrook.Orders.slnx --locked-mode
++
++      - name: Fail on vulnerable packages
++        run: |
++          dotnet list Quellbrook.Orders.slnx package --vulnerable --include-transitive | tee vulnerable.txt
++          if grep -q "has the following vulnerable packages" vulnerable.txt; then exit 1; fi
++
++      - name: Build
++        run: dotnet build Quellbrook.Orders.slnx -c Release --no-restore
++
++      - name: Test
++        run: dotnet test Quellbrook.Orders.slnx -c Release --no-build
+diff --git a/.github/workflows/codeql.yml b/.github/workflows/codeql.yml
+new file mode 100644
+index 0000000..77c2f2b
+--- /dev/null
++++ b/.github/workflows/codeql.yml
+@@ -0,0 +1,41 @@
++name: CodeQL
++
++on:
++  push:
++    branches: [main]
++  pull_request:
++    branches: [main]
++  schedule:
++    - cron: "17 4 * * 1"
++
++permissions:
++  contents: read
++
++jobs:
++  analyze:
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    permissions:
++      contents: read
++      security-events: write
++    steps:
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        with:
++          persist-credentials: false
++
++      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
++        with:
++          global-json-file: global.json
++
++      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
++        with:
++          languages: csharp
++          build-mode: manual
++          queries: security-and-quality
++
++      - name: Build
++        run: dotnet build Quellbrook.Orders.slnx -c Release
++
++      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
++        with:
++          category: /language:csharp
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+new file mode 100644
+index 0000000..9b1a9fa
+--- /dev/null
++++ b/.github/workflows/deploy.yml
+@@ -0,0 +1,66 @@
++name: Deploy
++
++# Manual, behind the protected "production" environment (required reviewers). Order: migrate the schema with the
++# release's migrations bundle (migrations are additive), then roll out the image by digest, wait for the rollout,
++# and undo it if the new pods never become ready.
++on:
++  workflow_dispatch:
++    inputs:
++      version:
++        description: Release tag to roll out, e.g. v0.3.0
++        required: true
++        type: string
++
++permissions:
++  contents: read
++
++concurrency:
++  group: deploy-production
++  cancel-in-progress: false
++
++jobs:
++  production:
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    environment: production
++    env:
++      VERSION: ${{ inputs.version }}
++      NAMESPACE: quellbrook-orders
++    steps:
++      - name: Fetch release artifacts
++        env:
++          GH_TOKEN: ${{ github.token }}
++        run: |
++          gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" --pattern efbundle --pattern SHA256SUMS --pattern image-digests.txt --dir release
++          (cd release && sha256sum --check SHA256SUMS)
++          gh attestation verify release/efbundle --repo "$GITHUB_REPOSITORY"
++          chmod +x release/efbundle
++
++      - name: Migrate the database
++        env:
++          ConnectionStrings__Orders: ${{ secrets.PRODUCTION_DB_MIGRATOR_CONNECTION }}
++        run: ./release/efbundle
++
++      - name: Write kubeconfig
++        env:
++          KUBECONFIG_DATA: ${{ secrets.PRODUCTION_KUBECONFIG }}
++        run: |
++          umask 077
++          printf '%s' "$KUBECONFIG_DATA" > "$RUNNER_TEMP/kubeconfig"
++
++      - name: Roll out
++        env:
++          KUBECONFIG: ${{ runner.temp }}/kubeconfig
++        run: |
++          digest=$(sed -n 's/^orders=//p' release/image-digests.txt)
++          kubectl -n "$NAMESPACE" set image deployment/quellbrook-orders api="ghcr.io/code-assurance-initiative/quellbrook-orders@${digest}"
++          if ! kubectl -n "$NAMESPACE" rollout status deployment/quellbrook-orders --timeout=5m; then
++            echo "::error::quellbrook-orders did not become ready; rolling back"
++            kubectl -n "$NAMESPACE" rollout undo deployment/quellbrook-orders
++            kubectl -n "$NAMESPACE" rollout status deployment/quellbrook-orders --timeout=5m
++            exit 1
++          fi
++
++      - name: Remove kubeconfig
++        if: always()
++        run: rm -f "$RUNNER_TEMP/kubeconfig"
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+new file mode 100644
+index 0000000..5b286c3
+--- /dev/null
++++ b/.github/workflows/release.yml
+@@ -0,0 +1,85 @@
++name: Release
++
++# Publishing a GitHub release for a version tag builds the image (pushed by digest, with provenance and an SBOM) and
++# the EF Core migrations bundle, and attaches the bundle, its SHA-256 checksum (with a build-provenance attestation)
++# and the image digest to the release. Deploying is a separate, manual step (deploy.yml).
++on:
++  release:
++    types: [published]
++
++permissions:
++  contents: read
++
++jobs:
++  release:
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    permissions:
++      contents: write
++      packages: write
++      id-token: write
++      attestations: write
++    env:
++      DOTNET_NOLOGO: true
++      ContinuousIntegrationBuild: true
++      VERSION: ${{ github.event.release.tag_name }}
++    steps:
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        with:
++          persist-credentials: false
++
++      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
++        with:
++          global-json-file: global.json
++
++      - name: Restore (locked) and tools
++        run: |
++          dotnet restore Quellbrook.Orders.slnx --locked-mode
++          dotnet tool restore
++
++      - name: Build migrations bundle
++        run: >-
++          dotnet ef migrations bundle
++          --project src/Quellbrook.Orders.Infrastructure
++          --startup-project src/Quellbrook.Orders.Infrastructure
++          --configuration Release
++          --self-contained --target-runtime linux-x64
++          --output artifacts/efbundle
++
++      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
++
++      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
++        with:
++          registry: ghcr.io
++          username: ${{ github.actor }}
++          password: ${{ secrets.GITHUB_TOKEN }}
++
++      - name: Build and push image
++        id: image
++        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
++        with:
++          context: .
++          file: src/Quellbrook.Orders.Api/Dockerfile
++          push: true
++          provenance: mode=max
++          sbom: true
++          tags: ghcr.io/code-assurance-initiative/quellbrook-orders:${{ github.event.release.tag_name }}
++
++      - name: Checksum of the bundle
++        run: |
++          cd artifacts
++          sha256sum efbundle > SHA256SUMS
++
++      - name: Attest build provenance of the bundle
++        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
++        with:
++          subject-path: artifacts/efbundle
++
++      - name: Attach to the release
++        env:
++          GH_TOKEN: ${{ github.token }}
++          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
++        run: |
++          printf 'orders=%s\n' "$IMAGE_DIGEST" > artifacts/image-digests.txt
++          gh release upload "$VERSION" artifacts/efbundle artifacts/SHA256SUMS artifacts/image-digests.txt \
++            --repo "$GITHUB_REPOSITORY"
