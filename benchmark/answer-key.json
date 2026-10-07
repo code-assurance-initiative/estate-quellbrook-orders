@@ -1,0 +1,587 @@
+{
+  "schema": "https://github.com/code-assurance-initiative/scanner-benchmark/schema/answer-key.schema.json",
+  "schemaVersion": "1.2",
+  "repo": "code-assurance-initiative/estate-quellbrook-orders",
+  "keyVersion": "1.0.0",
+  "languages": [
+    "csharp"
+  ],
+  "theme": "Quellbrook Freight reference estate, order service: a C# DDD service (Order aggregate, domain events, transactional outbox to a message broker) with three sprints of scripted history in which the team replaces a dual write by an outbox and keeps improving.",
+  "lineTolerance": 3,
+  "entries": [
+    {
+      "id": "ORD-001",
+      "label": "must-fire",
+      "concept": "publicly-mutable-entity-state",
+      "file": "src/Quellbrook.Orders.Domain/Orders/Parcel.cs",
+      "lines": [
+        12,
+        16
+      ],
+      "rationale": "Parcel is an entity inside the Order aggregate, yet its weight and dimensions have public setters: any code holding an order can change a parcel after the order was placed, bypassing the aggregate's weight and size limits (Order.Place validates them once) and raising no domain event, so the published OrderPlaced contract and the stored order can disagree."
+    },
+    {
+      "id": "ORD-002",
+      "label": "must-fire",
+      "concept": "missing-cancellation-propagation",
+      "file": "src/Quellbrook.Orders.Infrastructure/Persistence/EfOrderRepository.cs",
+      "lines": [
+        40,
+        52
+      ],
+      "rationale": "The order-list query accepts the request's CancellationToken but does not pass it to the two database round-trips it makes (the count and the page). A client that disconnects, or a gateway timeout, leaves the query running against PostgreSQL to completion."
+    },
+    {
+      "id": "TRP-001",
+      "label": "must-not-fire",
+      "concept": "dual-write-without-outbox",
+      "file": "src/Quellbrook.Orders.Infrastructure/Messaging/OutboxRelay.cs",
+      "lines": [
+        40,
+        70
+      ],
+      "rationale": "The outbox relay publishes a stored message to the broker and then marks the row dispatched in a second write. That is the transactional-outbox pattern's relay, not a dual write: the business change and the message were committed together earlier; a crash between publish and mark re-publishes the same message id, which consumers de-duplicate."
+    },
+    {
+      "id": "TRP-002",
+      "label": "must-not-fire",
+      "concept": "event-not-named-in-past-tense",
+      "file": "src/Quellbrook.Orders.Api/Contracts/PlaceOrderRequest.cs",
+      "lines": [
+        6,
+        6
+      ],
+      "rationale": "PlaceOrderRequest is the HTTP request body of POST /orders, not an event; an imperative name is correct for a request."
+    },
+    {
+      "id": "TRP-003",
+      "label": "must-not-fire",
+      "concept": "event-not-named-in-past-tense",
+      "file": "src/Quellbrook.Orders.Application/PlaceOrder/PlaceOrderCommand.cs",
+      "lines": [
+        5,
+        5
+      ],
+      "rationale": "PlaceOrderCommand is a command handled by exactly one handler; commands are named in the imperative."
+    },
+    {
+      "id": "TRP-004",
+      "label": "must-not-fire",
+      "concept": "personal-data-in-event-store",
+      "file": "src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderPlacedV1.cs",
+      "lines": [
+        8,
+        16
+      ],
+      "rationale": "OrderPlacedV1 carries the consignee's name, address and optional contact details because dispatch and the notifier need them to deliver and to notify. It is an integration message, not a persisted event of an event store: the service stores state, not events, and the outbox row that carries it is deleted seven days after it was dispatched (OutboxRetention), so the personal data in it can be erased."
+    },
+    {
+      "id": "TRP-005",
+      "label": "must-not-fire",
+      "concept": "primitive-entity-identifier",
+      "file": "src/Quellbrook.Orders.Contracts/IntegrationEvents/OrderPlacedV1.cs",
+      "lines": [
+        8,
+        8
+      ],
+      "rationale": "The published contract uses a plain Guid for the order id on purpose: a wire contract shared with other teams carries primitive types, and the domain's strongly typed OrderId is mapped at the boundary."
+    },
+    {
+      "id": "TRP-006",
+      "label": "must-not-fire",
+      "concept": "hardcoded-credential",
+      "cwe": "CWE-798",
+      "file": "deploy/k8s/deployment.yaml",
+      "lines": [
+        50,
+        60
+      ],
+      "rationale": "The database connection string and the broker credentials are read from Kubernetes Secrets (secretKeyRef, materialised by an ExternalSecret); nothing secret is written in the manifest."
+    },
+    {
+      "id": "TRP-007",
+      "label": "must-not-fire",
+      "concept": "suppressed-diagnostic",
+      "file": ".editorconfig",
+      "lines": [
+        36,
+        37
+      ],
+      "rationale": "CA2007 (ConfigureAwait) is switched off at the repository root with its reason on the line above: tests must not call ConfigureAwait(false) (xUnit1030), and src/.editorconfig switches it back on as a warning for all production code. A scoped, documented suppression is not hidden debt."
+    },
+    {
+      "id": "NA-001",
+      "label": "not-applicable",
+      "concept": "missing-text-alternative",
+      "rationale": "The orders service is an HTTP API with a message relay; it has no user interface: there are no images."
+    },
+    {
+      "id": "NA-002",
+      "label": "not-applicable",
+      "concept": "form-control-without-label",
+      "rationale": "The orders service is an HTTP API with a message relay; it has no user interface: there are no form controls."
+    },
+    {
+      "id": "NA-003",
+      "label": "not-applicable",
+      "concept": "page-structure-violation",
+      "rationale": "The orders service is an HTTP API with a message relay; it has no user interface: there are no pages."
+    },
+    {
+      "id": "NA-004",
+      "label": "not-applicable",
+      "concept": "non-keyboard-accessible-interaction",
+      "rationale": "The orders service is an HTTP API with a message relay; it has no user interface: there are no interactive markup."
+    },
+    {
+      "id": "NA-005",
+      "label": "not-applicable",
+      "concept": "invalid-aria-usage",
+      "rationale": "The orders service is an HTTP API with a message relay; it has no user interface: there are no ARIA attributes."
+    },
+    {
+      "id": "NA-006",
+      "label": "not-applicable",
+      "concept": "visual-and-motion-safety",
+      "rationale": "The orders service is an HTTP API with a message relay; it has no user interface: there are no styles or animation."
+    },
+    {
+      "id": "NA-007",
+      "label": "not-applicable",
+      "concept": "accessibility-checks-in-ci",
+      "rationale": "The orders service is an HTTP API with a message relay; it has no user interface: there are no user interface to check."
+    },
+    {
+      "id": "NA-008",
+      "label": "not-applicable",
+      "concept": "alt-text-quality",
+      "rationale": "The orders service is an HTTP API with a message relay; it has no user interface: there are no images."
+    },
+    {
+      "id": "NA-009",
+      "label": "not-applicable",
+      "concept": "link-and-button-text-quality",
+      "rationale": "The orders service is an HTTP API with a message relay; it has no user interface: there are no links or buttons."
+    },
+    {
+      "id": "NA-010",
+      "label": "not-applicable",
+      "concept": "heading-and-label-text-quality",
+      "rationale": "The orders service is an HTTP API with a message relay; it has no user interface: there are no headings or labels."
+    },
+    {
+      "id": "NA-011",
+      "label": "not-applicable",
+      "concept": "cross-site-scripting",
+      "rationale": "The API returns JSON only (problem+json for errors); it renders no HTML."
+    },
+    {
+      "id": "NA-012",
+      "label": "not-applicable",
+      "concept": "sensitive-data-in-browser-storage",
+      "rationale": "No browser code."
+    },
+    {
+      "id": "NA-013",
+      "label": "not-applicable",
+      "concept": "nondeterministic-event-fold",
+      "rationale": "The service stores state, not events: no event-sourced aggregate, no fold."
+    },
+    {
+      "id": "NA-014",
+      "label": "not-applicable",
+      "concept": "mutable-persisted-event",
+      "rationale": "The service stores state, not events: there is no event store."
+    },
+    {
+      "id": "BND-001",
+      "label": "score-band",
+      "concept": "high-cyclomatic-complexity",
+      "band": [
+        80,
+        100
+      ],
+      "rationale": "Small handlers and aggregates; no method above the usual threshold."
+    },
+    {
+      "id": "BND-002",
+      "label": "score-band",
+      "concept": "high-cognitive-complexity",
+      "band": [
+        80,
+        100
+      ],
+      "rationale": "Small handlers and aggregates; flat control flow."
+    },
+    {
+      "id": "BND-003",
+      "label": "score-band",
+      "concept": "duplicated-code",
+      "band": [
+        80,
+        100
+      ],
+      "rationale": "No copied blocks of note."
+    },
+    {
+      "id": "BND-004",
+      "label": "score-band",
+      "concept": "test-coverage",
+      "band": [
+        70,
+        100
+      ],
+      "rationale": "Unit tests for the domain and application layers, integration tests over the HTTP API and persistence."
+    },
+    {
+      "id": "BND-005",
+      "label": "score-band",
+      "concept": "test-pyramid-distribution",
+      "band": [
+        50,
+        100
+      ],
+      "rationale": "More unit than integration tests."
+    },
+    {
+      "id": "BND-006",
+      "label": "score-band",
+      "concept": "dependencies-not-locked",
+      "band": [
+        80,
+        100
+      ],
+      "rationale": "Central package management with committed lock files, restored in locked mode in CI."
+    },
+    {
+      "id": "BND-007",
+      "label": "score-band",
+      "concept": "security-tooling-in-ci",
+      "band": [
+        60,
+        100
+      ],
+      "rationale": "CodeQL on every pull request plus a vulnerable-package gate in CI."
+    },
+    {
+      "id": "BND-008",
+      "label": "score-band",
+      "concept": "vulnerability-disclosure-policy",
+      "band": [
+        80,
+        100
+      ],
+      "rationale": "SECURITY.md with a private reporting channel and response times."
+    },
+    {
+      "id": "BND-009",
+      "label": "score-band",
+      "concept": "readme-quality",
+      "band": [
+        70,
+        100
+      ],
+      "rationale": "README with purpose, build/run, configuration, testing, architecture and ownership sections."
+    },
+    {
+      "id": "BND-010",
+      "label": "score-band",
+      "concept": "architecture-documentation",
+      "band": [
+        70,
+        100
+      ],
+      "rationale": "docs/architecture.md with C4 diagrams in Mermaid, plus ADRs."
+    },
+    {
+      "id": "BND-011",
+      "label": "score-band",
+      "concept": "folder-structure",
+      "band": [
+        80,
+        100
+      ],
+      "rationale": "src/ and tests/ separation, one root namespace prefix."
+    },
+    {
+      "id": "BND-012",
+      "label": "score-band",
+      "concept": "ci-build-and-test-pipeline",
+      "band": [
+        80,
+        100
+      ],
+      "rationale": "CI builds and tests every push and pull request."
+    },
+    {
+      "id": "BND-013",
+      "label": "score-band",
+      "concept": "observability",
+      "band": [
+        60,
+        100
+      ],
+      "rationale": "Structured logging through ILogger, OpenTelemetry traces and metrics, health checks."
+    },
+    {
+      "id": "BND-014",
+      "label": "score-band",
+      "concept": "deployment-rollback-safety",
+      "band": [
+        50,
+        100
+      ],
+      "rationale": "Rolling updates by image digest with a rollback step in the deploy workflow."
+    },
+    {
+      "id": "BND-015",
+      "label": "score-band",
+      "concept": "release-hygiene",
+      "band": [
+        40,
+        100
+      ],
+      "rationale": "CHANGELOG with every release, <Version> 0.3.0 and tags v0.1.0..v0.3.0."
+    },
+    {
+      "id": "BND-016",
+      "label": "score-band",
+      "concept": "build-provenance-and-signing",
+      "band": [
+        40,
+        100
+      ],
+      "rationale": "Release images built by CI with provenance and SBOM attestations."
+    },
+    {
+      "id": "BND-017",
+      "label": "score-band",
+      "concept": "network-egress-policy",
+      "band": [
+        60,
+        100
+      ],
+      "rationale": "Default-deny NetworkPolicies with one allowance per real flow."
+    },
+    {
+      "id": "BND-018",
+      "label": "score-band",
+      "concept": "workload-syscall-confinement",
+      "band": [
+        10,
+        80
+      ],
+      "rationale": "seccomp RuntimeDefault, all capabilities dropped; no AppArmor or custom profiles."
+    },
+    {
+      "id": "BND-019",
+      "label": "score-band",
+      "concept": "runtime-threat-detection-and-admission",
+      "band": [
+        0,
+        40
+      ],
+      "rationale": "Pod Security Admission 'restricted' on the namespace; no runtime threat detection or signed-image admission."
+    },
+    {
+      "id": "BND-020",
+      "label": "score-band",
+      "concept": "churn-complexity-hotspot",
+      "band": [
+        70,
+        100
+      ],
+      "rationale": "Six weeks of history; churn lands on small files."
+    },
+    {
+      "id": "BND-021",
+      "label": "score-band",
+      "concept": "knowledge-concentration",
+      "band": [
+        30,
+        100
+      ],
+      "rationale": "A team of two or three authors over six weeks; some files are naturally single-author."
+    },
+    {
+      "id": "BND-022",
+      "label": "score-band",
+      "concept": "knowledge-freshness",
+      "band": [
+        70,
+        100
+      ],
+      "rationale": "The whole history is recent and the authors are active."
+    },
+    {
+      "id": "BND-023",
+      "label": "score-band",
+      "concept": "change-coupling",
+      "band": [
+        50,
+        100
+      ],
+      "rationale": "Co-changes are explicit dependencies or tests changing with their subject."
+    },
+    {
+      "id": "BND-024",
+      "label": "score-band",
+      "concept": "documentation-quality",
+      "band": [
+        60,
+        100
+      ],
+      "rationale": "Model-judged. README, architecture overview and ADRs are clear and current. Wide band."
+    },
+    {
+      "id": "BND-025",
+      "label": "score-band",
+      "concept": "adr-quality",
+      "band": [
+        60,
+        100
+      ],
+      "rationale": "Model-judged. ADRs carry status, context, decision and two-sided consequences. Wide band."
+    },
+    {
+      "id": "BND-026",
+      "label": "score-band",
+      "concept": "adr-conformance",
+      "band": [
+        60,
+        100
+      ],
+      "rationale": "Model-judged. The code follows its ADRs. Wide band."
+    },
+    {
+      "id": "BND-027",
+      "label": "score-band",
+      "concept": "documentation-accuracy",
+      "band": [
+        50,
+        100
+      ],
+      "rationale": "Model-judged. README and architecture describe the code as it is. Wide band."
+    },
+    {
+      "id": "BND-028",
+      "label": "score-band",
+      "concept": "inconsistent-naming",
+      "band": [
+        60,
+        100
+      ],
+      "rationale": "Model-judged. Consistent domain vocabulary. Wide band."
+    },
+    {
+      "id": "BND-029",
+      "label": "score-band",
+      "concept": "low-value-comments",
+      "band": [
+        60,
+        100
+      ],
+      "rationale": "Model-judged. Comments explain why, not what. Wide band."
+    },
+    {
+      "id": "BND-030",
+      "label": "score-band",
+      "concept": "internal-api-inconsistency",
+      "band": [
+        60,
+        100
+      ],
+      "rationale": "Model-judged. Endpoints and handlers follow one shape. Wide band."
+    },
+    {
+      "id": "BND-031",
+      "label": "score-band",
+      "concept": "security-response-headers",
+      "band": [
+        80,
+        100
+      ],
+      "rationale": "CSP, X-Content-Type-Options, frame and referrer policy on every response; HSTS."
+    },
+    {
+      "id": "BND-032",
+      "label": "score-band",
+      "concept": "https-enforcement",
+      "band": [
+        80,
+        100
+      ],
+      "rationale": "UseHttpsRedirection and UseHsts outside development."
+    },
+    {
+      "id": "BND-033",
+      "label": "score-band",
+      "concept": "authorization-enforcement",
+      "band": [
+        70,
+        100
+      ],
+      "rationale": "Every endpoint but health requires a named scope policy."
+    },
+    {
+      "id": "BND-034",
+      "label": "score-band",
+      "concept": "inbound-input-validation",
+      "band": [
+        60,
+        100
+      ],
+      "rationale": "Request bodies validated before they reach the domain; the domain re-checks its invariants."
+    },
+    {
+      "id": "BND-035",
+      "label": "score-band",
+      "concept": "versioned-schema-migrations",
+      "band": [
+        80,
+        100
+      ],
+      "rationale": "EF Core migrations, one per schema change, applied by a migrations bundle."
+    },
+    {
+      "id": "BND-036",
+      "label": "score-band",
+      "concept": "data-retention-policy",
+      "band": [
+        0,
+        60
+      ],
+      "rationale": "Outbox rows are purged seven days after dispatch, but orders (with consignee data) have no enforced retention yet; docs/privacy.md says so."
+    },
+    {
+      "id": "BND-037",
+      "label": "score-band",
+      "concept": "audit-trail",
+      "band": [
+        10,
+        80
+      ],
+      "rationale": "Orders record the operator who placed or cancelled them; no general audit log."
+    },
+    {
+      "id": "BND-038",
+      "label": "score-band",
+      "concept": "data-subject-rights",
+      "band": [
+        0,
+        50
+      ],
+      "rationale": "No erasure or export operation for consignee data."
+    },
+    {
+      "id": "BND-039",
+      "label": "score-band",
+      "concept": "data-encryption-controls",
+      "band": [
+        0,
+        70
+      ],
+      "rationale": "TLS to the database and broker and encryption at rest by the platform; no field-level encryption."
+    }
+  ]
+}
