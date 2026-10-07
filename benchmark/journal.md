@@ -82,3 +82,23 @@
 - `benchmark/history/`: 26 patches, `build-history.sh` (rebuilds the scripted part on top of the key-first commit and
   verifies the final commit id and the three tag targets; verified by running it into a fresh directory) and a
   README listing every commit by sprint with the story notes.
+
+## 2026-10-07 — scan iteration 3 (final) and freeze
+
+- Pushed: main fast-forwarded from the key-first commit to `e8eaa11` (no force push: the scripted history extends the
+  key-first commit), plus the sprint tags `v0.1.0` … `v0.3.0`.
+- Contained pass at `e8eaa11`: byte-identical SARIF to iteration 2 (26 results). Recall 0/2, trap resistance 6/12
+  (TRP-002, -007, -009, -010, -011, -012 caught), every other row recorded noise judged in iterations 1–2.
+- Model-judged host pass at `e8eaa11`: D19 90, D20 100, D21 90, D22 100, D24 100, D25 100, M4 100, all in band; the
+  host has no container/IaC tools, so the three D31 rows are absent there. One new row:
+  - D21 "inconsistent casing for address line parameters … `line2` in `OrdersApiFactory.CreateClient`" —
+    **false-positive**: that method has no such parameter, and the PascalCase names it contrasts are positional
+    record parameters, which C# convention writes in PascalCase.
+- Bands out (kept as set before the first scan): C4 data retention 100 vs [0, 60] (credits the outbox purge as
+  retention of all personal data; the orders themselves are kept indefinitely, as docs/privacy.md says), D42 80 vs
+  [0, 40]. Unscored: lock files (SC1), bus factor and knowledge freshness (no D16/D34 score on a six-week history),
+  audit trail, data-subject rights.
+- False negatives: ORD-001 (public setters on an entity inside the aggregate; DM5 silent) and ORD-002 (async query
+  without a token; only the location-less X2 roll-up).
+- Converged: the repository holds its two plants, its twelve traps and recorded scanner noise only. Frozen as v1.0.0
+  with this entry.
