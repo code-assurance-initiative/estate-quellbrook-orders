@@ -17,7 +17,7 @@ RUN dotnet restore src/Quellbrook.Orders.Api/Quellbrook.Orders.Api.csproj --lock
 COPY src/ src/
 RUN dotnet publish src/Quellbrook.Orders.Api/Quellbrook.Orders.Api.csproj -c Release --no-restore -o /app
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:222759b391a1aaf241166672c8f99b2d4ada452e7b5319f3c6e8f265a37b5ad4 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac AS runtime
 WORKDIR /app
 COPY --from=build /app ./
 ENV ASPNETCORE_HTTP_PORTS=8080
